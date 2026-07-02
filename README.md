@@ -169,12 +169,25 @@ Create `.env` in the project root:
 ```env
 MONGO_URL=mongodb://localhost:27017
 DB_NAME=ca_practice
+APP_BASE_URL=http://localhost:3000
 NEXT_PUBLIC_BASE_URL=http://localhost:3000
 JWT_SECRET=<run: openssl rand -base64 32>
 CORS_ORIGINS=*
+
+# WhatsApp Cloud API Configuration
+WHATSAPP_PROVIDER=mock
+WHATSAPP_ACCESS_TOKEN=EAAG...
+WHATSAPP_PHONE_NUMBER_ID=123456789012345
+WHATSAPP_LANGUAGE_CODE=en
+WHATSAPP_TASK_TEMPLATE=task_assigned_notification
+WHATSAPP_REASSIGNED_TEMPLATE=task_reassigned_notification
+WHATSAPP_ROSTER_TEMPLATE=daily_staff_roster_pdf
+
+# Cron Job Protection Secret (Optional for local)
+CRON_SECRET=your_custom_cron_secret
 ```
 
-> **🔐 Important**: replace `JWT_SECRET` with a strong random string. Never commit `.env` to git.
+> **🔐 Important**: Replace `JWT_SECRET` with a strong random string. For live WhatsApp routing, set `WHATSAPP_PROVIDER=meta` and supply verified values from the Facebook Developer Portal. Never commit `.env` to git.
 
 ### 3. Start MongoDB
 ```bash
@@ -215,8 +228,20 @@ Best when you don't want to manage servers.
    - `MONGO_URL` — use [MongoDB Atlas](https://www.mongodb.com/atlas/database) free tier connection string
    - `DB_NAME` — e.g., `ca_practice`
    - `JWT_SECRET` — generate a strong random string
+   - `APP_BASE_URL` — your public deployment URL, e.g., `https://your-app.vercel.app` (required for Meta/WhatsApp Cloud API to fetch compiled PDF rosters securely)
    - `NEXT_PUBLIC_BASE_URL` — your Vercel URL, e.g., `https://your-app.vercel.app`
-4. Deploy. Vercel auto-builds on every git push.
+   - `WHATSAPP_PROVIDER` — set to `meta` for production, or `mock` for log-based testing
+   - `WHATSAPP_ACCESS_TOKEN` — permanent access token from your Facebook Developer Account
+   - `WHATSAPP_PHONE_NUMBER_ID` — Phone number ID associated with your business account
+   - `WHATSAPP_LANGUAGE_CODE` — default is `en`
+   - `WHATSAPP_TASK_TEMPLATE` — approved template name (e.g., `task_assigned_notification`)
+   - `WHATSAPP_REASSIGNED_TEMPLATE` — approved template name (e.g., `task_reassigned_notification`)
+   - `WHATSAPP_ROSTER_TEMPLATE` — approved template name with Document header support (e.g., `daily_staff_roster_pdf`)
+   - `CRON_SECRET` — Vercel Crons automatically inject this, but you can configure it explicitly to secure your `/api/cron/daily-whatsapp-roster` endpoint.
+4. **Vercel Cron Job Configuration**:
+   - The project comes pre-configured with a `vercel.json` specifying the `/api/cron/daily-whatsapp-roster` path to run daily.
+   - On Vercel, navigate to **Project Settings** -> **Cron Jobs** to verify or customize the schedule. Ensure the environment variable `CRON_SECRET` is configured to automatically restrict unauthorized access to the cron routes.
+5. Deploy. Vercel auto-builds on every git push.
 
 **Pros**: zero infra, free tier suitable for small firms, automatic HTTPS.
 **Cons**: MongoDB must be hosted externally (Atlas).
