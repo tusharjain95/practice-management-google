@@ -1,0 +1,46 @@
+{
+  "name": "CA Practice Manager",
+  "short_name": "CA Manager",
+  "description": "Complete practice management software for CA firms — manage leads, tasks, staff, and generate professional quotations.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0f172a",
+  "theme_color": "#4f46e5",
+  "categories": ["business", "productivity", "finance"],
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Tasks",
+      "short_name": "Tasks",
+      "url": "/?view=tasks",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Calendar",
+      "short_name": "Calendar",
+      "url": "/?view=calendar",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    }
+  ]
+}

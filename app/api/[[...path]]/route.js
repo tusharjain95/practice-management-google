@@ -1,0 +1,1765 @@
+import { NextResponse } from 'next/server';
+import { MongoClient } from 'mongodb';
+import { v4 as uuidv4 } from 'uuid';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import fs from 'fs';
+import path from 'path';
+
+const MONGO_URL = process.env.MONGO_URL;
+const DB_NAME = process.env.DB_NAME || 'ca_practice';
+const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret';
+
+let cached = global._mongo;
+if (!cached) cached = global._mongo = { client: null, db: null };
+
+const DB_FILE = '/memory/db.json';
+
+function ensureDbDir() {
+  try {
+    const dir = path.dirname(DB_FILE);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+  } catch (e) {
+    console.error('Error creating mock DB directory:', e);
+  }
+}
+
+function readDbFile() {
+  ensureDbDir();
+  try {
+    if (fs.existsSync(DB_FILE)) {
+      const data = fs.readFileSync(DB_FILE, 'utf8');
+      return JSON.parse(data);
+    }
+  } catch (e) {
+    console.error('Error reading mock DB file:', e);
+  }
+  return {};
+}
+
+function writeDbFile(data) {
+  ensureDbDir();
+  try {
+    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf8');
+  } catch (e) {
+    console.error('Error writing mock DB file:', e);
+  }
+}
+
+function matchQuery(doc, query) {
+  if (!query) return true;
+  for (const key of Object.keys(query)) {
+    if (key === '$or') {
+      const orArray = query[key];
+      if (!Array.isArray(orArray)) continue;
+      let matchedAny = false;
+      for (const subQuery of orArray) {
+        if (matchQuery(doc, subQuery)) {
+          matchedAny = true;
+          break;
+        }
+      }
+      if (!matchedAny) return false;
+      continue;
+    }
+    
+    const docValue = doc[key];
+    const queryValue = query[key];
+    
+    if (queryValue && typeof queryValue === 'object' && !(queryValue instanceof RegExp)) {
+      for (const op of Object.keys(queryValue)) {
+        const val = queryValue[op];
+        if (op === '$ne') {
+          if (docValue === val) return false;
+        } else if (op === '$eq') {
+          if (docValue !== val) return false;
+        } else if (op === '$gt') {
+          if (!(docValue > val)) return false;
+        } else if (op === '$gte') {
+          if (!(docValue >= val)) return false;
+        } else if (op === '$lt') {
+          if (!(docValue < val)) return false;
+        } else if (op === '$lte') {
+          if (!(docValue <= val)) return false;
+        } else if (op === '$in') {
+          if (!Array.isArray(val) || !val.includes(docValue)) return false;
+        } else if (op === '$nin') {
+          if (!Array.isArray(val) || val.includes(docValue)) return false;
+        }
+      }
+    } else if (queryValue instanceof RegExp || (queryValue && typeof queryValue.test === 'function')) {
+      if (typeof docValue !== 'string' || !queryValue.test(docValue)) return false;
+    } else {
+      if (docValue !== queryValue) return false;
+    }
+  }
+  return true;
+}
+
+function applyUpdate(doc, updateSpec) {
+  if (!updateSpec) return doc;
+  
+  if (updateSpec.$set) {
+    for (const k of Object.keys(updateSpec.$set)) {
+      doc[k] = updateSpec.$set[k];
+    }
+  }
+  
+  if (updateSpec.$pull) {
+    for (const k of Object.keys(updateSpec.$pull)) {
+      const valToPull = updateSpec.$pull[k];
+      if (Array.isArray(doc[k])) {
+        doc[k] = doc[k].filter(item => item !== valToPull);
+      }
+    }
+  }
+  
+  return doc;
+}
+
+function getMockDb() {
+  const collection = (collectionName) => {
+    return {
+      async findOne(query, options = {}) {
+        const data = readDbFile();
+        const docs = data[collectionName] || [];
+        const found = docs.find(doc => matchQuery(doc, query));
+        if (!found) return null;
+        
+        let result = { ...found };
+        if (options.projection) {
+          if (options.projection._id === 0) delete result._id;
+        }
+        return result;
+      },
+      
+      find(query) {
+        const data = readDbFile();
+        const docs = data[collectionName] || [];
+        let filtered = docs.filter(doc => matchQuery(doc, query));
+        
+        let sortSpec = null;
+        let limitVal = null;
+        let skipVal = null;
+        let projSpec = null;
+        
+        const cursor = {
+          project(proj) {
+            projSpec = proj;
+            return cursor;
+          },
+          sort(spec) {
+            sortSpec = spec;
+            return cursor;
+          },
+          limit(n) {
+            limitVal = n;
+            return cursor;
+          },
+          skip(n) {
+            skipVal = n;
+            return cursor;
+          },
+          async toArray() {
+            let res = [...filtered];
+            
+            if (sortSpec) {
+              const keys = Object.keys(sortSpec);
+              if (keys.length > 0) {
+                const key = keys[0];
+                const dir = sortSpec[key];
+                res.sort((a, b) => {
+                  const valA = a[key] ?? '';
+                  const valB = b[key] ?? '';
+                  if (valA < valB) return -1 * dir;
+                  if (valA > valB) return 1 * dir;
+                  return 0;
+                });
+              }
+            }
+            
+            if (skipVal !== null) {
+              res = res.slice(skipVal);
+            }
+            if (limitVal !== null) {
+              res = res.slice(0, limitVal);
+            }
+            
+            if (projSpec) {
+              res = res.map(doc => {
+                const copy = { ...doc };
+                if (projSpec._id === 0) delete copy._id;
+                const projKeys = Object.keys(projSpec);
+                if (projKeys.some(k => k !== '_id' && projSpec[k] === 1)) {
+                  const clean = {};
+                  if (projSpec._id !== 0 && copy._id !== undefined) clean._id = copy._id;
+                  for (const k of projKeys) {
+                    if (k !== '_id' && projSpec[k] === 1) {
+                      clean[k] = copy[k];
+                    }
+                  }
+                  return clean;
+                } else if (projKeys.some(k => k !== '_id' && projSpec[k] === 0)) {
+                  for (const k of projKeys) {
+                    if (k !== '_id' && projSpec[k] === 0) {
+                      delete copy[k];
+                    }
+                  }
+                }
+                return copy;
+              });
+            }
+            
+            return res;
+          }
+        };
+        return cursor;
+      },
+      
+      async insertOne(doc) {
+        const data = readDbFile();
+        if (!data[collectionName]) data[collectionName] = [];
+        const copy = { _id: uuidv4(), ...doc };
+        data[collectionName].push(copy);
+        writeDbFile(data);
+        return { insertedId: copy._id };
+      },
+      
+      async insertMany(docs) {
+        const data = readDbFile();
+        if (!data[collectionName]) data[collectionName] = [];
+        const insertedIds = [];
+        for (const doc of docs) {
+          const copy = { _id: uuidv4(), ...doc };
+          data[collectionName].push(copy);
+          insertedIds.push(copy._id);
+        }
+        writeDbFile(data);
+        return { insertedIds };
+      },
+      
+      async updateOne(query, updateSpec, options = {}) {
+        const data = readDbFile();
+        const docs = data[collectionName] || [];
+        let foundIdx = docs.findIndex(doc => matchQuery(doc, query));
+        if (foundIdx >= 0) {
+          docs[foundIdx] = applyUpdate(docs[foundIdx], updateSpec);
+        } else if (options.upsert) {
+          let newDoc = { ...query };
+          newDoc = applyUpdate(newDoc, updateSpec);
+          if (!newDoc._id) newDoc._id = uuidv4();
+          docs.push(newDoc);
+        } else {
+          return { matchedCount: 0, modifiedCount: 0 };
+        }
+        data[collectionName] = docs;
+        writeDbFile(data);
+        return { matchedCount: 1, modifiedCount: 1 };
+      },
+      
+      async updateMany(query, updateSpec, options = {}) {
+        const data = readDbFile();
+        const docs = data[collectionName] || [];
+        let modifiedCount = 0;
+        let matchedCount = 0;
+        for (let i = 0; i < docs.length; i++) {
+          if (matchQuery(docs[i], query)) {
+            matchedCount++;
+            docs[i] = applyUpdate(docs[i], updateSpec);
+            modifiedCount++;
+          }
+        }
+        data[collectionName] = docs;
+        writeDbFile(data);
+        return { matchedCount, modifiedCount };
+      },
+      
+      async deleteOne(query) {
+        const data = readDbFile();
+        const docs = data[collectionName] || [];
+        let foundIdx = docs.findIndex(doc => matchQuery(doc, query));
+        if (foundIdx >= 0) {
+          docs.splice(foundIdx, 1);
+          data[collectionName] = docs;
+          writeDbFile(data);
+          return { deletedCount: 1 };
+        }
+        return { deletedCount: 0 };
+      },
+      
+      async deleteMany(query) {
+        const data = readDbFile();
+        const docs = data[collectionName] || [];
+        const initialCount = docs.length;
+        const kept = docs.filter(doc => !matchQuery(doc, query));
+        data[collectionName] = kept;
+        writeDbFile(data);
+        return { deletedCount: initialCount - kept.length };
+      },
+      
+      async countDocuments(query = {}) {
+        const data = readDbFile();
+        const docs = data[collectionName] || [];
+        const filtered = docs.filter(doc => matchQuery(doc, query));
+        return filtered.length;
+      }
+    };
+  };
+  
+  return { collection };
+}
+
+async function getDb() {
+  if (cached.db) return cached.db;
+  if (!MONGO_URL) {
+    console.warn('[AI Studio] MONGO_URL not provided, using JSON-fallback mock db.');
+    cached.db = getMockDb();
+    await seedAdmin(cached.db);
+    return cached.db;
+  }
+  try {
+    const client = new MongoClient(MONGO_URL);
+    await client.connect();
+    cached.client = client;
+    cached.db = client.db(DB_NAME);
+    await seedAdmin(cached.db);
+    return cached.db;
+  } catch (err) {
+    console.warn('[AI Studio] Failed to connect to MongoDB, using JSON-fallback mock db.', err);
+    cached.db = getMockDb();
+    await seedAdmin(cached.db);
+    return cached.db;
+  }
+}
+
+async function seedAdmin(db) {
+  const users = db.collection('users');
+  const existing = await users.findOne({ email: 'admin@ca.com' });
+  if (!existing) {
+    const passwordHash = await bcrypt.hash('admin123', 10);
+    await users.insertOne({
+      id: uuidv4(),
+      email: 'admin@ca.com',
+      passwordHash,
+      name: 'Admin User',
+      role: 'admin',
+      active: true,
+      createdAt: new Date().toISOString(),
+    });
+    // Seed a manager and staff
+    const mgrHash = await bcrypt.hash('manager123', 10);
+    await users.insertOne({
+      id: uuidv4(), email: 'manager@ca.com', passwordHash: mgrHash,
+      name: 'Priya Manager', role: 'manager', active: true,
+      createdAt: new Date().toISOString(),
+    });
+    const staffHash = await bcrypt.hash('staff123', 10);
+    await users.insertOne({
+      id: uuidv4(), email: 'staff@ca.com', passwordHash: staffHash,
+      name: 'Rahul Staff', role: 'staff', active: true,
+      createdAt: new Date().toISOString(),
+    });
+  }
+}
+
+function json(data, status = 200) {
+  return NextResponse.json(data, { status });
+}
+
+function getToken(request) {
+  const auth = request.headers.get('authorization') || '';
+  if (!auth.startsWith('Bearer ')) return null;
+  return auth.slice(7);
+}
+
+function verifyAuth(request) {
+  const token = getToken(request);
+  if (!token) return null;
+  try {
+    return jwt.verify(token, JWT_SECRET);
+  } catch {
+    return null;
+  }
+}
+
+function logActivity(db, user, action, entity, entityId, details = {}) {
+  return db.collection('activity_logs').insertOne({
+    id: uuidv4(), userId: user?.id, userName: user?.name,
+    action, entity, entityId, details,
+    createdAt: new Date().toISOString(),
+  });
+}
+
+// ============ HANDLERS ============
+
+async function handle(request, ctx) {
+  try {
+    const db = await getDb();
+    const params = await ctx.params;
+    const path = params?.path || [];
+    const route = path.join('/');
+    const method = request.method;
+    const url = new URL(request.url);
+
+    // -------- AUTH --------
+    if (route === 'auth/login' && method === 'POST') {
+      const { email, password } = await request.json();
+      const user = await db.collection('users').findOne({ email: (email || '').toLowerCase().trim() });
+      if (!user) return json({ error: 'Invalid credentials' }, 401);
+      const ok = await bcrypt.compare(password || '', user.passwordHash);
+      if (!ok) return json({ error: 'Invalid credentials' }, 401);
+      const token = jwt.sign({ id: user.id, email: user.email, role: user.role, name: user.name }, JWT_SECRET, { expiresIn: '7d' });
+      return json({
+        token,
+        user: { id: user.id, email: user.email, name: user.name, role: user.role, permissions: user.permissions || {} },
+      });
+    }
+
+    if (route === 'auth/me' && method === 'GET') {
+      const u = verifyAuth(request);
+      if (!u) return json({ error: 'Unauthorized' }, 401);
+      return json({ user: u });
+    }
+
+    // Change own password
+    if (route === 'auth/change-password' && method === 'POST') {
+      const u = verifyAuth(request);
+      if (!u) return json({ error: 'Unauthorized' }, 401);
+      const { currentPassword, newPassword } = await request.json();
+      if (!newPassword || newPassword.length < 6) {
+        return json({ error: 'New password must be at least 6 characters' }, 400);
+      }
+      const user = await db.collection('users').findOne({ id: u.id });
+      if (!user) return json({ error: 'User not found' }, 404);
+      const ok = await bcrypt.compare(currentPassword || '', user.passwordHash);
+      if (!ok) return json({ error: 'Current password is incorrect' }, 401);
+      const passwordHash = await bcrypt.hash(newPassword, 10);
+      await db.collection('users').updateOne({ id: u.id }, { $set: { passwordHash, updatedAt: new Date().toISOString() } });
+      logActivity(db, u, 'change_password', 'user', u.id);
+      return json({ ok: true });
+    }
+
+    // From here on, auth required
+    const me = verifyAuth(request);
+    if (!me) return json({ error: 'Unauthorized' }, 401);
+
+    // -------- USERS (staff management) --------
+    if (route === 'users' && method === 'GET') {
+      const users = await db.collection('users').find({}).project({ passwordHash: 0, _id: 0 }).toArray();
+      return json({ users });
+    }
+    if (route === 'users' && method === 'POST') {
+      if (me.role !== 'admin') return json({ error: 'Forbidden' }, 403);
+      const body = await request.json();
+      const exists = await db.collection('users').findOne({ email: body.email.toLowerCase().trim() });
+      if (exists) return json({ error: 'Email already exists' }, 400);
+      const passwordHash = await bcrypt.hash(body.password || 'password123', 10);
+      const user = {
+        id: uuidv4(),
+        email: body.email.toLowerCase().trim(),
+        passwordHash,
+        name: body.name,
+        role: body.role || 'staff',
+        active: true,
+        createdAt: new Date().toISOString(),
+      };
+      await db.collection('users').insertOne(user);
+      logActivity(db, me, 'create', 'user', user.id, { name: user.name });
+      const { passwordHash: _, _id, ...safe } = user;
+      return json({ user: safe });
+    }
+    if (route.startsWith('users/') && method === 'PUT') {
+      if (me.role !== 'admin') return json({ error: 'Forbidden' }, 403);
+      const id = route.split('/')[1];
+      const body = await request.json();
+      const update = {};
+      if (body.name) update.name = body.name;
+      if (body.role) update.role = body.role;
+      if (typeof body.active === 'boolean') update.active = body.active;
+      if (body.password) update.passwordHash = await bcrypt.hash(body.password, 10);
+      await db.collection('users').updateOne({ id }, { $set: update });
+      logActivity(db, me, 'update', 'user', id, update);
+      return json({ ok: true });
+    }
+    if (route.startsWith('users/') && method === 'DELETE') {
+      if (me.role !== 'admin') return json({ error: 'Forbidden' }, 403);
+      const id = route.split('/')[1];
+      await db.collection('users').deleteOne({ id });
+      logActivity(db, me, 'delete', 'user', id);
+      return json({ ok: true });
+    }
+
+    // -------- LEADS --------
+    if (route === 'leads' && method === 'GET') {
+      const filter = {};
+      if (me.role === 'staff') filter.assignedTo = me.id;
+      const status = url.searchParams.get('status');
+      const assignedTo = url.searchParams.get('assignedTo');
+      const serviceType = url.searchParams.get('serviceType');
+      if (status) filter.status = status;
+      if (assignedTo) filter.assignedTo = assignedTo;
+      if (serviceType) filter.serviceType = serviceType;
+      const leads = await db.collection('leads').find(filter).project({ _id: 0 }).sort({ createdAt: -1 }).toArray();
+      return json({ leads });
+    }
+    if (route === 'leads' && method === 'POST') {
+      // Staff can create leads (auto-assigned to themselves)
+      const body = await request.json();
+      const assignedTo = me.role === 'staff' ? me.id : (body.assignedTo || '');
+      const lead = {
+        id: uuidv4(),
+        name: body.name,
+        phone: body.phone || '',
+        email: body.email || '',
+        company: body.company || '',
+        serviceType: body.serviceType || 'Other',
+        source: body.source || 'Other',
+        status: body.status || 'New',
+        assignedTo,
+        followUpDate: body.followUpDate || '',
+        notes: [],
+        createdAt: body.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        createdBy: me.id,
+        createdByName: me.name,
+      };
+      await db.collection('leads').insertOne(lead);
+      logActivity(db, me, 'create', 'lead', lead.id, { name: lead.name });
+      const { _id, ...safe } = lead;
+      return json({ lead: safe });
+    }
+    if (route.startsWith('leads/') && method === 'PUT') {
+      const id = route.split('/')[1];
+      const sub = route.split('/')[2];
+      if (sub === 'notes') {
+        // Staff can add notes only to their own leads
+        if (me.role === 'staff') {
+          const l = await db.collection('leads').findOne({ id });
+          if (!l || l.assignedTo !== me.id) return json({ error: 'Forbidden' }, 403);
+        }
+        const { note } = await request.json();
+        const entry = { id: uuidv4(), text: note, by: me.name, at: new Date().toISOString() };
+        await db.collection('leads').updateOne({ id }, { $push: { notes: entry }, $set: { updatedAt: new Date().toISOString() } });
+        return json({ ok: true, note: entry });
+      }
+      const body = await request.json();
+      // Staff can edit only their own leads, but may reassign them to other users.
+      if (me.role === 'staff') {
+        const l = await db.collection('leads').findOne({ id });
+        if (!l || l.assignedTo !== me.id) return json({ error: 'Forbidden' }, 403);
+        delete body.createdBy;
+      }
+      body.updatedAt = new Date().toISOString();
+      await db.collection('leads').updateOne({ id }, { $set: body });
+      logActivity(db, me, 'update', 'lead', id, body);
+      return json({ ok: true });
+    }
+    if (route.startsWith('leads/') && method === 'DELETE') {
+      if (me.role === 'staff') return json({ error: 'Forbidden' }, 403);
+      const id = route.split('/')[1];
+      await db.collection('leads').deleteOne({ id });
+      logActivity(db, me, 'delete', 'lead', id);
+      return json({ ok: true });
+    }
+
+    // Convert lead -> task
+    if (route === 'leads/convert' && method === 'POST') {
+      if (me.role === 'staff') return json({ error: 'Forbidden' }, 403);
+      const body = await request.json();
+      const lead = await db.collection('leads').findOne({ id: body.leadId });
+      if (!lead) return json({ error: 'Lead not found' }, 404);
+      const task = {
+        id: uuidv4(),
+        title: body.title || `${lead.serviceType} - ${lead.name}`,
+        description: body.description || `Converted from lead. Client: ${lead.name}, Company: ${lead.company || '-'}`,
+        category: body.category || lead.serviceType,
+        priority: body.priority || 'Medium',
+        dueDate: body.dueDate || '',
+        assignedTo: body.assignedTo || lead.assignedTo,
+        status: 'Pending',
+        leadId: lead.id,
+        clientName: lead.name,
+        comments: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        createdBy: me.id,
+      };
+      await db.collection('tasks').insertOne(task);
+      await db.collection('leads').updateOne({ id: lead.id }, { $set: { status: 'Converted', updatedAt: new Date().toISOString() } });
+      logActivity(db, me, 'convert', 'lead', lead.id, { taskId: task.id });
+      const { _id, ...safe } = task;
+      return json({ task: safe });
+    }
+
+    // -------- TASKS --------
+    if (route === 'tasks' && method === 'GET') {
+      const filter = {};
+      if (me.role === 'staff') {
+        filter.$or = [
+          { assignedTo: me.id },
+          { assignees: me.id },
+          { needsDiscussion: true, discussionWith: me.id },
+        ];
+      }
+      const status = url.searchParams.get('status');
+      const assignedTo = url.searchParams.get('assignedTo');
+      const priority = url.searchParams.get('priority');
+      const category = url.searchParams.get('category');
+      const discussion = url.searchParams.get('discussion');
+      if (status) filter.status = status;
+      if (assignedTo) filter.$or = [{ assignedTo }, { assignees: assignedTo }];
+      if (priority) filter.priority = priority;
+      if (category) filter.category = category;
+      if (discussion === 'me') { filter.needsDiscussion = true; filter.discussionWith = me.id; }
+      else if (discussion === 'true') filter.needsDiscussion = true;
+      const tasks = await db.collection('tasks').find(filter).project({ _id: 0 }).sort({ createdAt: -1 }).toArray();
+      // Backfill assignees for legacy single-assignee tasks
+      for (const t of tasks) {
+        if (!t.assignees || !t.assignees.length) t.assignees = t.assignedTo ? [t.assignedTo] : [];
+      }
+      return json({ tasks });
+    }
+    if (route === 'tasks' && method === 'POST') {
+      const body = await request.json();
+      // Build assignees array (multi). Any user can now assign to anyone.
+      let assignees = [];
+      if (Array.isArray(body.assignees) && body.assignees.length) {
+        assignees = body.assignees.filter(Boolean);
+      } else if (body.assignedTo) {
+        assignees = [body.assignedTo];
+      } else {
+        // No assignee specified — default to self
+        assignees = [me.id];
+      }
+      const assignedTo = assignees[0] || ''; // primary for legacy
+      const task = {
+        id: uuidv4(),
+        title: body.title,
+        description: body.description || '',
+        category: body.category || 'Other',
+        priority: body.priority || 'Medium',
+        dueDate: body.dueDate || '',
+        assignedTo,
+        assignees,
+        status: 'Pending',
+        leadId: body.leadId || null,
+        clientId: body.clientId || null,
+        clientName: body.clientName || '',
+        recurrence: body.recurrence || 'none',
+        needsDiscussion: !!body.needsDiscussion,
+        discussionWith: body.needsDiscussion ? (body.discussionWith || '') : '',
+        discussionRaisedAt: body.needsDiscussion ? new Date().toISOString() : null,
+        discussionRaisedBy: body.needsDiscussion ? me.id : null,
+        discussionRaisedByName: body.needsDiscussion ? me.name : null,
+        comments: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        createdBy: me.id,
+        createdByName: me.name,
+      };
+      await db.collection('tasks').insertOne(task);
+      logActivity(db, me, 'create', 'task', task.id, { title: task.title });
+      const { _id, ...safe } = task;
+      return json({ task: safe });
+    }
+    if (route.startsWith('tasks/') && method === 'PUT') {
+      const id = route.split('/')[1];
+      const sub = route.split('/')[2];
+      if (sub === 'comments') {
+        const { comment } = await request.json();
+        const entry = { id: uuidv4(), text: comment, by: me.name, at: new Date().toISOString() };
+        await db.collection('tasks').updateOne({ id }, { $push: { comments: entry }, $set: { updatedAt: new Date().toISOString() } });
+        return json({ ok: true, comment: entry });
+      }
+      const body = await request.json();
+      // Role-based update permissions
+      let updatedFields = {};
+      const existing = await db.collection('tasks').findOne({ id });
+      if (!existing) return json({ error: 'Not found' }, 404);
+
+      // Auto-set discussion metadata when flag transitions
+      if (body.needsDiscussion === true && !existing.needsDiscussion) {
+        body.discussionRaisedAt = new Date().toISOString();
+        body.discussionRaisedBy = me.id;
+        body.discussionRaisedByName = me.name;
+      }
+      if (body.needsDiscussion === false && existing.needsDiscussion) {
+        body.discussionResolvedAt = new Date().toISOString();
+        body.discussionResolvedBy = me.id;
+        body.discussionResolvedByName = me.name;
+        body.discussionWith = '';
+      }
+
+      if (me.role === 'staff') {
+        const isAssignee = existing.assignedTo === me.id || (Array.isArray(existing.assignees) && existing.assignees.includes(me.id));
+        const isDiscussionTarget = existing.needsDiscussion && existing.discussionWith === me.id;
+        if (!isAssignee && !isDiscussionTarget) return json({ error: 'Forbidden' }, 403);
+        // Staff can fully edit (including reassigning to other users) any task they are part of.
+        const allowed = { ...body };
+        if (isAssignee) {
+          delete allowed.createdBy;
+          delete allowed.createdByName;
+          // Normalize multi-assignee -> primary assignedTo
+          if (Array.isArray(allowed.assignees)) {
+            allowed.assignees = allowed.assignees.filter(Boolean);
+            allowed.assignedTo = allowed.assignees[0] || allowed.assignedTo || '';
+          }
+        } else {
+          // Discussion-only target (not an assignee) — limited to status change
+          const minimal = {};
+          if (body.status) minimal.status = body.status;
+          Object.assign(allowed, minimal);
+        }
+        allowed.updatedAt = new Date().toISOString();
+        updatedFields = allowed;
+        await db.collection('tasks').updateOne({ id }, { $set: allowed });
+      } else {
+        // Admin/manager: full update including reassign + discussion resolve
+        // If assignees array passed, sync assignedTo to primary
+        if (Array.isArray(body.assignees)) {
+          body.assignees = body.assignees.filter(Boolean);
+          body.assignedTo = body.assignees[0] || body.assignedTo || '';
+        }
+        body.updatedAt = new Date().toISOString();
+        updatedFields = body;
+        await db.collection('tasks').updateOne({ id }, { $set: body });
+      }
+      // Recurring task rollover: if marked Completed AND has recurrence, create next occurrence
+      if (updatedFields.status === 'Completed') {
+        const current = await db.collection('tasks').findOne({ id }, { projection: { _id: 0 } });
+        if (current && current.recurrence && current.recurrence !== 'none' && !current.recurrenceSpawned) {
+          const next = { ...current };
+          delete next._id;
+          next.id = uuidv4();
+          next.status = 'Pending';
+          next.comments = [];
+          next.recurrenceSpawned = false;
+          next.parentTaskId = current.id;
+          next.needsDiscussion = false;
+          next.discussionWith = '';
+          next.createdAt = new Date().toISOString();
+          next.updatedAt = new Date().toISOString();
+          if (current.dueDate) {
+            const d = new Date(current.dueDate);
+            if (current.recurrence === 'daily') d.setDate(d.getDate() + 1);
+            else if (current.recurrence === 'weekly') d.setDate(d.getDate() + 7);
+            else if (current.recurrence === 'monthly') d.setMonth(d.getMonth() + 1);
+            else if (current.recurrence === 'quarterly') d.setMonth(d.getMonth() + 3);
+            else if (current.recurrence === 'half-yearly') d.setMonth(d.getMonth() + 6);
+            else if (current.recurrence === 'yearly') d.setFullYear(d.getFullYear() + 1);
+            next.dueDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+          }
+          await db.collection('tasks').insertOne(next);
+          await db.collection('tasks').updateOne({ id: current.id }, { $set: { recurrenceSpawned: true } });
+          logActivity(db, me, 'recurring_spawn', 'task', next.id, { from: current.id });
+        }
+      }
+      logActivity(db, me, 'update', 'task', id, body);
+      return json({ ok: true });
+    }
+    if (route.startsWith('tasks/') && method === 'DELETE') {
+      if (me.role === 'staff') return json({ error: 'Forbidden' }, 403);
+      const id = route.split('/')[1];
+      await db.collection('tasks').deleteOne({ id });
+      logActivity(db, me, 'delete', 'task', id);
+      return json({ ok: true });
+    }
+
+    // -------- QUOTATIONS --------
+    if (route === 'quotations' && method === 'GET') {
+      const filter = me.role === 'staff' ? { createdBy: me.id } : {};
+      const quotes = await db.collection('quotations').find(filter).project({ _id: 0 }).sort({ createdAt: -1 }).toArray();
+      return json({ quotations: quotes });
+    }
+    if (route === 'quotations' && method === 'POST') {
+      const body = await request.json();
+      const count = await db.collection('quotations').countDocuments();
+      const year = new Date().getFullYear();
+      const quotationNumber = `QT-${year}-${String(count + 1).padStart(4, '0')}`;
+      const subtotal = (body.services || []).reduce((s, it) => s + (Number(it.price) || 0) * (Number(it.qty) || 1), 0);
+      const gstAmount = body.gstApplicable ? +(subtotal * 0.18).toFixed(2) : 0;
+      const total = +(subtotal + gstAmount).toFixed(2);
+      const quote = {
+        id: uuidv4(),
+        quotationNumber,
+        clientName: body.clientName,
+        companyName: body.companyName || '',
+        clientAddress: body.clientAddress || '',
+        clientEmail: body.clientEmail || '',
+        clientPhone: body.clientPhone || '',
+        services: body.services || [],
+        gstApplicable: !!body.gstApplicable,
+        subtotal,
+        gstAmount,
+        total,
+        validUntil: body.validUntil || '',
+        terms: body.terms || 'Payment due within 15 days. Quotation valid for 30 days from issue date.',
+        firmName: body.firmName || 'ABC & Associates, Chartered Accountants',
+        firmAddress: body.firmAddress || '123 Business District, Mumbai - 400001',
+        firmGstin: body.firmGstin || '27AABCU9603R1ZX',
+        firmContact: body.firmContact || 'contact@abcca.com  |  +91 98765 43210',
+        createdAt: new Date().toISOString(),
+        createdBy: me.id,
+        createdByName: me.name,
+      };
+      await db.collection('quotations').insertOne(quote);
+      logActivity(db, me, 'create', 'quotation', quote.id, { quotationNumber });
+      const { _id, ...safe } = quote;
+      return json({ quotation: safe });
+    }
+    if (route.startsWith('quotations/') && method === 'GET') {
+      const id = route.split('/')[1];
+      const q = await db.collection('quotations').findOne({ id }, { projection: { _id: 0 } });
+      if (!q) return json({ error: 'Not found' }, 404);
+      return json({ quotation: q });
+    }
+    if (route.startsWith('quotations/') && method === 'PUT') {
+      if (me.role === 'staff') return json({ error: 'Forbidden' }, 403);
+      const id = route.split('/')[1];
+      const body = await request.json();
+      const existing = await db.collection('quotations').findOne({ id });
+      if (!existing) return json({ error: 'Not found' }, 404);
+      // Recalculate totals on edit
+      const services = body.services || existing.services || [];
+      const gstApplicable = body.gstApplicable !== undefined ? !!body.gstApplicable : !!existing.gstApplicable;
+      const subtotal = services.reduce((s, it) => s + (Number(it.price) || 0) * (Number(it.qty) || 1), 0);
+      const gstAmount = gstApplicable ? +(subtotal * 0.18).toFixed(2) : 0;
+      const total = +(subtotal + gstAmount).toFixed(2);
+      const update = {
+        ...body,
+        services,
+        gstApplicable,
+        subtotal, gstAmount, total,
+        // quotationNumber is immutable — never overwrite
+        quotationNumber: existing.quotationNumber,
+        updatedAt: new Date().toISOString(),
+        updatedBy: me.id,
+        updatedByName: me.name,
+      };
+      delete update.id;
+      delete update.createdAt;
+      delete update.createdBy;
+      delete update.createdByName;
+      await db.collection('quotations').updateOne({ id }, { $set: update });
+      logActivity(db, me, 'update', 'quotation', id, { quotationNumber: existing.quotationNumber });
+      const fresh = await db.collection('quotations').findOne({ id }, { projection: { _id: 0 } });
+      return json({ quotation: fresh });
+    }
+    if (route.startsWith('quotations/') && method === 'DELETE') {
+      if (me.role === 'staff') return json({ error: 'Forbidden' }, 403);
+      const id = route.split('/')[1];
+      await db.collection('quotations').deleteOne({ id });
+      return json({ ok: true });
+    }
+
+    // -------- CLIENTS --------
+    if (route === 'clients' && method === 'GET') {
+      const clients = await db.collection('clients').find({}).project({ _id: 0 }).sort({ createdAt: -1 }).toArray();
+      // compute net due per client
+      const enriched = [];
+      for (const c of clients) {
+        const invoices = await db.collection('invoices').find({ clientId: c.id }).project({ _id: 0 }).toArray();
+        const payments = await db.collection('payments').find({ clientId: c.id }).project({ _id: 0 }).toArray();
+        const billed = invoices.reduce((s, i) => s + (i.total || 0), 0);
+        const received = payments.reduce((s, p) => s + (p.amount || 0), 0);
+        const netDue = +((c.openingBalance || 0) + billed - received).toFixed(2);
+        enriched.push({ ...c, billed, received, netDue, invoiceCount: invoices.length });
+      }
+      return json({ clients: enriched });
+    }
+    if (route === 'clients' && method === 'POST') {
+      if (me.role === 'staff') return json({ error: 'Forbidden' }, 403);
+      const body = await request.json();
+      const client = {
+        id: uuidv4(),
+        name: body.name,
+        company: body.company || '',
+        phone: body.phone || '',
+        email: body.email || '',
+        address: body.address || '',
+        gstin: body.gstin || '',
+        pan: body.pan || '',
+        openingBalance: Number(body.openingBalance) || 0,
+        openingBalanceAsOn: body.openingBalanceAsOn || new Date().toISOString().slice(0, 10),
+        notes: body.notes || '',
+        leadId: body.leadId || null,
+        createdAt: new Date().toISOString(),
+        createdBy: me.id,
+      };
+      await db.collection('clients').insertOne(client);
+      logActivity(db, me, 'create', 'client', client.id, { name: client.name });
+      const { _id, ...safe } = client;
+      return json({ client: safe });
+    }
+    // -------- CLIENTS BULK IMPORT (Excel/CSV via JSON rows) --------
+    // POST /api/clients/bulk-import
+    // Body: { rows: [ { Name, Company?, Phone?, Email?, Address?, GSTIN?, PAN?, OpeningBalance?, AsOn?, Notes? }, ... ], skipDuplicates?: bool }
+    if (route === 'clients/bulk-import' && method === 'POST') {
+      if (me.role === 'staff') return json({ error: 'Forbidden' }, 403);
+      const body = await request.json();
+      const rows = Array.isArray(body.rows) ? body.rows : [];
+      const skipDuplicates = body.skipDuplicates !== false; // default true
+
+      if (!rows.length) return json({ error: 'No rows to import' }, 400);
+
+      // Pre-fetch existing for duplicate detection (by name+phone or gstin)
+      const existing = await db.collection('clients').find({}).project({ name: 1, phone: 1, gstin: 1, _id: 0 }).toArray();
+      const dupeKey = (r) => `${(r.name || '').trim().toLowerCase()}|${(r.phone || '').trim()}`;
+      const gstinSet = new Set(existing.filter(e => e.gstin).map(e => e.gstin.trim().toUpperCase()));
+      const nameSet = new Set(existing.map(e => dupeKey(e)));
+
+      const inserted = [];
+      const skipped = [];
+      const errors = [];
+
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i] || {};
+        // Accept multiple casings of keys: Name/name, Company/company, etc.
+        const pick = (...keys) => {
+          for (const k of keys) {
+            if (r[k] !== undefined && r[k] !== null && String(r[k]).trim() !== '') return r[k];
+          }
+          return '';
+        };
+        const name = String(pick('Name', 'name', 'NAME', 'Client Name', 'ClientName') || '').trim();
+        if (!name) { errors.push({ row: i + 1, reason: 'Missing required field: Name' }); continue; }
+
+        const company = String(pick('Company', 'company', 'Business', 'CompanyName') || '').trim();
+        const phone = String(pick('Phone', 'phone', 'Mobile', 'Contact') || '').trim();
+        const email = String(pick('Email', 'email', 'EmailAddress') || '').trim();
+        const address = String(pick('Address', 'address') || '').trim();
+        const gstinRaw = String(pick('GSTIN', 'gstin', 'GST', 'GSTNo') || '').trim().toUpperCase();
+        const pan = String(pick('PAN', 'pan', 'PANNo') || '').trim().toUpperCase();
+        const openingBalance = Number(pick('OpeningBalance', 'openingBalance', 'Opening Balance', 'Opening', 'Balance')) || 0;
+        const asOnRaw = pick('AsOn', 'asOn', 'OpeningBalanceAsOn', 'Opening Balance As On', 'As On Date', 'AsOnDate', 'OpeningAsOn');
+        // Normalize date to YYYY-MM-DD (accept ISO, dd/mm/yyyy, dd-mm-yyyy, or Excel serial)
+        const openingBalanceAsOn = (() => {
+          if (!asOnRaw) return new Date().toISOString().slice(0, 10);
+          if (typeof asOnRaw === 'number') {
+            // Excel serial -> JS date
+            const d = new Date(Date.UTC(1899, 11, 30) + asOnRaw * 86400000);
+            return d.toISOString().slice(0, 10);
+          }
+          const s = String(asOnRaw).trim();
+          if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+          const m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+          if (m) {
+            const dd = m[1].padStart(2, '0');
+            const mm = m[2].padStart(2, '0');
+            let yy = m[3];
+            if (yy.length === 2) yy = (Number(yy) > 50 ? '19' : '20') + yy;
+            return `${yy}-${mm}-${dd}`;
+          }
+          const parsed = new Date(s);
+          if (!isNaN(parsed.getTime())) return parsed.toISOString().slice(0, 10);
+          return new Date().toISOString().slice(0, 10);
+        })();
+        const notes = String(pick('Notes', 'notes', 'Remarks') || '').trim();
+
+        // Duplicate detection
+        const key = dupeKey({ name, phone });
+        const dupeByName = nameSet.has(key);
+        const dupeByGstin = gstinRaw && gstinSet.has(gstinRaw);
+        if (skipDuplicates && (dupeByName || dupeByGstin)) {
+          skipped.push({ row: i + 1, name, reason: dupeByGstin ? 'Duplicate GSTIN' : 'Duplicate name + phone' });
+          continue;
+        }
+
+        const client = {
+          id: uuidv4(),
+          name,
+          company,
+          phone,
+          email,
+          address,
+          gstin: gstinRaw,
+          pan,
+          openingBalance,
+          openingBalanceAsOn,
+          notes,
+          leadId: null,
+          createdAt: new Date().toISOString(),
+          createdBy: me.id,
+          importedAt: new Date().toISOString(),
+        };
+        try {
+          await db.collection('clients').insertOne(client);
+          inserted.push({ row: i + 1, id: client.id, name });
+          nameSet.add(key);
+          if (gstinRaw) gstinSet.add(gstinRaw);
+        } catch (e) {
+          errors.push({ row: i + 1, name, reason: e.message || 'Insert failed' });
+        }
+      }
+
+      logActivity(db, me, 'bulk_import', 'clients', 'bulk', {
+        total: rows.length,
+        inserted: inserted.length,
+        skipped: skipped.length,
+        errors: errors.length,
+      });
+      return json({
+        ok: true,
+        total: rows.length,
+        inserted: inserted.length,
+        skipped: skipped.length,
+        errors: errors.length,
+        details: { inserted, skipped, errors },
+      });
+    }
+    if (route.startsWith('clients/') && method === 'GET') {
+      const id = route.split('/')[1];
+      const sub = route.split('/')[2];
+      const client = await db.collection('clients').findOne({ id }, { projection: { _id: 0 } });
+      if (!client) return json({ error: 'Not found' }, 404);
+      if (sub === 'ledger') {
+        const invoices = await db.collection('invoices').find({ clientId: id }).project({ _id: 0 }).sort({ createdAt: 1 }).toArray();
+        const payments = await db.collection('payments').find({ clientId: id }).project({ _id: 0 }).sort({ date: 1 }).toArray();
+        const billed = invoices.reduce((s, i) => s + (i.total || 0), 0);
+        const received = payments.reduce((s, p) => s + (p.amount || 0), 0);
+        const netDue = +((client.openingBalance || 0) + billed - received).toFixed(2);
+        // Build ledger entries
+        const entries = [];
+        entries.push({ type: 'opening', date: client.openingBalanceAsOn, label: 'Opening Balance', debit: client.openingBalance || 0, credit: 0 });
+        invoices.forEach(i => entries.push({ type: 'invoice', date: i.createdAt.slice(0, 10), label: `Invoice ${i.invoiceNumber}`, debit: i.total, credit: 0, id: i.id }));
+        payments.forEach(p => entries.push({ type: 'payment', date: p.date, label: `Payment via ${p.mode}${p.reference ? ' (' + p.reference + ')' : ''}`, debit: 0, credit: p.amount, id: p.id }));
+        entries.sort((a, b) => a.date.localeCompare(b.date));
+        let running = 0;
+        entries.forEach(e => { running += (e.debit - e.credit); e.balance = +running.toFixed(2); });
+        return json({ client, invoices, payments, billed, received, netDue, ledger: entries });
+      }
+      return json({ client });
+    }
+    if (route.startsWith('clients/') && method === 'PUT') {
+      if (me.role === 'staff') return json({ error: 'Forbidden' }, 403);
+      const id = route.split('/')[1];
+      const body = await request.json();
+      if (body.openingBalance !== undefined) body.openingBalance = Number(body.openingBalance);
+      await db.collection('clients').updateOne({ id }, { $set: body });
+      logActivity(db, me, 'update', 'client', id, body);
+      return json({ ok: true });
+    }
+    if (route.startsWith('clients/') && method === 'DELETE') {
+      if (me.role !== 'admin') return json({ error: 'Forbidden' }, 403);
+      const id = route.split('/')[1];
+      await db.collection('clients').deleteOne({ id });
+      logActivity(db, me, 'delete', 'client', id);
+      return json({ ok: true });
+    }
+
+    // -------- INVOICES --------
+    if (route === 'invoices' && method === 'GET') {
+      const filter = {};
+      const clientId = url.searchParams.get('clientId');
+      const status = url.searchParams.get('status');
+      if (clientId) filter.clientId = clientId;
+      if (status) filter.status = status;
+      const invoices = await db.collection('invoices').find(filter).project({ _id: 0 }).sort({ createdAt: -1 }).toArray();
+      // attach paidAmount per invoice
+      for (const inv of invoices) {
+        const pays = await db.collection('payments').find({ invoiceId: inv.id }).toArray();
+        inv.paidAmount = +pays.reduce((s, p) => s + (p.amount || 0), 0).toFixed(2);
+        inv.dueAmount = +(inv.total - inv.paidAmount).toFixed(2);
+      }
+      return json({ invoices });
+    }
+    if (route === 'invoices' && method === 'POST') {
+      if (me.role === 'staff') return json({ error: 'Forbidden' }, 403);
+      const body = await request.json();
+      const count = await db.collection('invoices').countDocuments();
+      const year = new Date().getFullYear();
+      const invoiceNumber = `INV-${year}-${String(count + 1).padStart(4, '0')}`;
+      const subtotal = (body.items || []).reduce((s, it) => s + (Number(it.rate) || 0) * (Number(it.qty) || 1), 0);
+      const gstAmount = body.gstApplicable ? +(subtotal * 0.18).toFixed(2) : 0;
+      const total = +(subtotal + gstAmount).toFixed(2);
+      const inv = {
+        id: uuidv4(),
+        invoiceNumber,
+        clientId: body.clientId || null,
+        clientName: body.clientName,
+        companyName: body.companyName || '',
+        clientAddress: body.clientAddress || '',
+        clientGstin: body.clientGstin || '',
+        items: body.items || [],
+        gstApplicable: !!body.gstApplicable,
+        subtotal, gstAmount, total,
+        dueDate: body.dueDate || '',
+        status: 'Unpaid',
+        notes: body.notes || '',
+        createdAt: new Date().toISOString(),
+        createdBy: me.id,
+        createdByName: me.name,
+      };
+      await db.collection('invoices').insertOne(inv);
+      logActivity(db, me, 'create', 'invoice', inv.id, { invoiceNumber });
+      const { _id, ...safe } = inv;
+      return json({ invoice: safe });
+    }
+    if (route.startsWith('invoices/') && method === 'GET') {
+      const id = route.split('/')[1];
+      const inv = await db.collection('invoices').findOne({ id }, { projection: { _id: 0 } });
+      if (!inv) return json({ error: 'Not found' }, 404);
+      const pays = await db.collection('payments').find({ invoiceId: id }).project({ _id: 0 }).toArray();
+      inv.paidAmount = +pays.reduce((s, p) => s + (p.amount || 0), 0).toFixed(2);
+      inv.dueAmount = +(inv.total - inv.paidAmount).toFixed(2);
+      inv.payments = pays;
+      return json({ invoice: inv });
+    }
+    if (route.startsWith('invoices/') && method === 'PUT') {
+      if (me.role === 'staff') return json({ error: 'Forbidden' }, 403);
+      const id = route.split('/')[1];
+      const body = await request.json();
+      await db.collection('invoices').updateOne({ id }, { $set: body });
+      logActivity(db, me, 'update', 'invoice', id);
+      return json({ ok: true });
+    }
+    if (route.startsWith('invoices/') && method === 'DELETE') {
+      if (me.role !== 'admin') return json({ error: 'Forbidden' }, 403);
+      const id = route.split('/')[1];
+      await db.collection('invoices').deleteOne({ id });
+      logActivity(db, me, 'delete', 'invoice', id);
+      return json({ ok: true });
+    }
+
+    // -------- PAYMENTS --------
+    if (route === 'payments' && method === 'GET') {
+      const filter = {};
+      const clientId = url.searchParams.get('clientId');
+      const invoiceId = url.searchParams.get('invoiceId');
+      if (clientId) filter.clientId = clientId;
+      if (invoiceId) filter.invoiceId = invoiceId;
+      const payments = await db.collection('payments').find(filter).project({ _id: 0 }).sort({ date: -1 }).toArray();
+      return json({ payments });
+    }
+    if (route === 'payments' && method === 'POST') {
+      if (me.role === 'staff') return json({ error: 'Forbidden' }, 403);
+      const body = await request.json();
+      const payment = {
+        id: uuidv4(),
+        clientId: body.clientId,
+        invoiceId: body.invoiceId || null,
+        amount: Number(body.amount) || 0,
+        mode: body.mode || 'Cash', // Cash | Bank | UPI | Cheque | Card
+        reference: body.reference || '',
+        date: body.date || new Date().toISOString().slice(0, 10),
+        notes: body.notes || '',
+        createdAt: new Date().toISOString(),
+        createdBy: me.id,
+      };
+      await db.collection('payments').insertOne(payment);
+      // Update invoice status if applicable
+      if (payment.invoiceId) {
+        const inv = await db.collection('invoices').findOne({ id: payment.invoiceId });
+        if (inv) {
+          const pays = await db.collection('payments').find({ invoiceId: inv.id }).toArray();
+          const totalPaid = pays.reduce((s, p) => s + (p.amount || 0), 0);
+          const newStatus = totalPaid >= inv.total ? 'Paid' : (totalPaid > 0 ? 'Partial' : 'Unpaid');
+          await db.collection('invoices').updateOne({ id: inv.id }, { $set: { status: newStatus } });
+        }
+      }
+      logActivity(db, me, 'create', 'payment', payment.id, { amount: payment.amount });
+      const { _id, ...safe } = payment;
+      return json({ payment: safe });
+    }
+    if (route.startsWith('payments/') && method === 'DELETE') {
+      if (me.role !== 'admin') return json({ error: 'Forbidden' }, 403);
+      const id = route.split('/')[1];
+      const p = await db.collection('payments').findOne({ id });
+      await db.collection('payments').deleteOne({ id });
+      if (p && p.invoiceId) {
+        const inv = await db.collection('invoices').findOne({ id: p.invoiceId });
+        if (inv) {
+          const pays = await db.collection('payments').find({ invoiceId: inv.id }).toArray();
+          const totalPaid = pays.reduce((s, x) => s + (x.amount || 0), 0);
+          const newStatus = totalPaid >= inv.total ? 'Paid' : (totalPaid > 0 ? 'Partial' : 'Unpaid');
+          await db.collection('invoices').updateOne({ id: inv.id }, { $set: { status: newStatus } });
+        }
+      }
+      return json({ ok: true });
+    }
+
+    // -------- BRANDING (single doc) --------
+    if (route === 'branding' && method === 'GET') {
+      const b = await db.collection('settings').findOne({ id: 'branding' }, { projection: { _id: 0 } });
+      return json({ branding: b || {
+        id: 'branding',
+        firmName: 'ABC & Associates, Chartered Accountants',
+        firmAddress: '123 Business District, Mumbai - 400001',
+        firmGstin: '27AABCU9603R1ZX',
+        firmContact: 'contact@abcca.com  |  +91 98765 43210',
+        firmEmail: 'contact@abcca.com',
+        firmPhone: '+91 98765 43210',
+        bankName: '',
+        bankAccount: '',
+        bankIfsc: '',
+        upiId: '',
+        logoBase64: '',
+        primaryColor: '#0f172a',
+        footerText: 'This is a computer-generated document.',
+      } });
+    }
+    if (route === 'branding' && method === 'PUT') {
+      if (me.role !== 'admin') return json({ error: 'Forbidden' }, 403);
+      const body = await request.json();
+      body.id = 'branding';
+      body.updatedAt = new Date().toISOString();
+      await db.collection('settings').updateOne({ id: 'branding' }, { $set: body }, { upsert: true });
+      logActivity(db, me, 'update', 'branding', 'branding');
+      return json({ ok: true });
+    }
+
+    // -------- SEARCH (global) --------
+    if (route === 'search' && method === 'GET') {
+      const q = (url.searchParams.get('q') || '').trim();
+      if (!q) return json({ results: [] });
+      const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      const filterStaff = me.role === 'staff' ? { assignedTo: me.id } : {};
+      const [leads, tasks, clients, invoices, quotations] = await Promise.all([
+        db.collection('leads').find({ ...filterStaff, $or: [{ name: rx }, { phone: rx }, { email: rx }, { company: rx }] }).project({ _id: 0 }).limit(10).toArray(),
+        db.collection('tasks').find({ ...filterStaff, $or: [{ title: rx }, { description: rx }, { clientName: rx }] }).project({ _id: 0 }).limit(10).toArray(),
+        me.role !== 'staff' ? db.collection('clients').find({ $or: [{ name: rx }, { company: rx }, { phone: rx }, { email: rx }, { gstin: rx }] }).project({ _id: 0 }).limit(10).toArray() : [],
+        me.role !== 'staff' ? db.collection('invoices').find({ $or: [{ invoiceNumber: rx }, { clientName: rx }, { companyName: rx }] }).project({ _id: 0 }).limit(10).toArray() : [],
+        me.role !== 'staff' ? db.collection('quotations').find({ $or: [{ quotationNumber: rx }, { clientName: rx }, { companyName: rx }] }).project({ _id: 0 }).limit(10).toArray() : [],
+      ]);
+      return json({ leads, tasks, clients, invoices, quotations });
+    }
+
+    // -------- REMINDERS / CALENDAR EVENTS --------
+    if (route === 'calendar' && method === 'GET') {
+      const from = url.searchParams.get('from'); // ISO date
+      const to = url.searchParams.get('to');
+      const filter = me.role === 'staff' ? { assignedTo: me.id } : {};
+      const tasks = await db.collection('tasks').find({ ...filter, dueDate: { $ne: '', $gte: from || '', $lte: to || '9999' } }).project({ _id: 0 }).toArray();
+      const leadFilter = me.role === 'staff' ? { assignedTo: me.id } : {};
+      const leads = await db.collection('leads').find({ ...leadFilter, followUpDate: { $ne: '', $gte: from || '', $lte: to || '9999' } }).project({ _id: 0 }).toArray();
+      return json({ tasks, leads });
+    }
+
+    if (route === 'reminders' && method === 'GET') {
+      const today = new Date().toISOString().slice(0, 10);
+      const in7 = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+      const filterStaff = me.role === 'staff' ? { assignedTo: me.id } : {};
+      const dueToday = await db.collection('tasks').find({ ...filterStaff, status: { $ne: 'Completed' }, dueDate: today }).project({ _id: 0 }).toArray();
+      const upcoming = await db.collection('tasks').find({ ...filterStaff, status: { $ne: 'Completed' }, dueDate: { $gt: today, $lte: in7 } }).project({ _id: 0 }).sort({ dueDate: 1 }).toArray();
+      const overdue = await db.collection('tasks').find({ ...filterStaff, status: { $ne: 'Completed' }, dueDate: { $ne: '', $lt: today } }).project({ _id: 0 }).sort({ dueDate: 1 }).toArray();
+      const followUpsToday = await db.collection('leads').find({ ...filterStaff, status: { $nin: ['Converted', 'Cancelled'] }, followUpDate: today }).project({ _id: 0 }).toArray();
+      const followUpsUpcoming = await db.collection('leads').find({ ...filterStaff, status: { $nin: ['Converted', 'Cancelled'] }, followUpDate: { $gt: today, $lte: in7 } }).project({ _id: 0 }).sort({ followUpDate: 1 }).toArray();
+      const followUpsOverdue = await db.collection('leads').find({ ...filterStaff, status: { $nin: ['Converted', 'Cancelled'] }, followUpDate: { $ne: '', $lt: today } }).project({ _id: 0 }).sort({ followUpDate: 1 }).toArray();
+      return json({ dueToday, upcoming, overdue, followUpsToday, followUpsUpcoming, followUpsOverdue });
+    }
+
+    // -------- RECEIVABLES AGING REPORT --------
+    if (route === 'reports/aging' && method === 'GET') {
+      const today = new Date();
+      const todayStr = today.toISOString().slice(0, 10);
+      const clients = await db.collection('clients').find({}).project({ _id: 0 }).toArray();
+      const allInvoices = await db.collection('invoices').find({ status: { $ne: 'Paid' } }).project({ _id: 0 }).toArray();
+      // attach paidAmount/dueAmount
+      for (const inv of allInvoices) {
+        const pays = await db.collection('payments').find({ invoiceId: inv.id }).toArray();
+        inv.paidAmount = +pays.reduce((s, p) => s + (p.amount || 0), 0).toFixed(2);
+        inv.dueAmount = +(inv.total - inv.paidAmount).toFixed(2);
+      }
+
+      function bucketize(daysOverdue) {
+        if (daysOverdue <= 0) return 'current';
+        if (daysOverdue <= 30) return 'b30';
+        if (daysOverdue <= 60) return 'b60';
+        if (daysOverdue <= 90) return 'b90';
+        return 'b90plus';
+      }
+
+      const totals = { current: 0, b30: 0, b60: 0, b90: 0, b90plus: 0, total: 0 };
+      const perClient = [];
+      const clientMap = new Map(clients.map(c => [c.id, c]));
+
+      // First handle all unpaid invoices grouped by client
+      const byClient = new Map();
+      for (const inv of allInvoices) {
+        const cid = inv.clientId || `_orphan_${inv.clientName}`;
+        if (!byClient.has(cid)) byClient.set(cid, { invoices: [], totalPayments: 0 });
+        byClient.get(cid).invoices.push(inv);
+      }
+
+      // Process clients with opening balance OR unpaid invoices
+      const allClientIds = new Set([...byClient.keys(), ...clients.map(c => c.id)]);
+      for (const cid of allClientIds) {
+        const c = clientMap.get(cid);
+        const cName = c?.name || allInvoices.find(i => (i.clientId || `_orphan_${i.clientName}`) === cid)?.clientName || 'Unknown';
+        const cCompany = c?.company || '';
+        const row = {
+          clientId: cid,
+          clientName: cName,
+          companyName: cCompany,
+          openingBalance: 0,
+          openingAsOn: c?.openingBalanceAsOn || '',
+          current: 0, b30: 0, b60: 0, b90: 0, b90plus: 0,
+          unpaidInvoiceCount: 0,
+          oldestInvoiceDate: null,
+          total: 0,
+        };
+
+        // Opening balance handling - bucket by openingBalanceAsOn date
+        if (c && c.openingBalance > 0) {
+          // First account for payments without invoice (on-account payments reduce opening)
+          const onAccount = await db.collection('payments').find({ clientId: c.id, invoiceId: null }).toArray();
+          const allClientPayments = await db.collection('payments').find({ clientId: c.id }).toArray();
+          const totalPaid = allClientPayments.reduce((s, p) => s + (p.amount || 0), 0);
+          const invoicesTotal = (byClient.get(c.id)?.invoices || []).reduce((s, i) => s + (i.total || 0), 0);
+          // remaining opening = opening - max(0, payments - invoices)
+          const allInvForClient = await db.collection('invoices').find({ clientId: c.id }).toArray();
+          const fullBilled = allInvForClient.reduce((s, i) => s + (i.total || 0), 0);
+          const remainingOpening = Math.max(0, c.openingBalance - Math.max(0, totalPaid - fullBilled));
+          // simpler: opening contribution to netDue = opening - (totalPaid applied to opening after invoices)
+          // We'll compute: balance from opening = max(0, opening + fullBilled - totalPaid) - sum(unpaid invoices due amount)
+          const unpaidDue = (byClient.get(c.id)?.invoices || []).reduce((s, i) => s + (i.dueAmount || 0), 0);
+          const netDueTotal = +((c.openingBalance || 0) + fullBilled - totalPaid).toFixed(2);
+          const openingPortion = Math.max(0, +(netDueTotal - unpaidDue).toFixed(2));
+          row.openingBalance = openingPortion;
+
+          // Bucket the opening portion based on openingBalanceAsOn
+          if (openingPortion > 0) {
+            const asOn = c.openingBalanceAsOn ? new Date(c.openingBalanceAsOn) : today;
+            const days = Math.floor((today - asOn) / 86400000);
+            const bucket = bucketize(days);
+            row[bucket] += openingPortion;
+          }
+        }
+
+        // Bucket each unpaid invoice's dueAmount based on dueDate
+        const invs = byClient.get(cid)?.invoices || [];
+        row.unpaidInvoiceCount = invs.length;
+        for (const inv of invs) {
+          if (inv.dueAmount <= 0) continue;
+          const dueDate = inv.dueDate ? new Date(inv.dueDate) : new Date(inv.createdAt);
+          const days = Math.floor((today - dueDate) / 86400000);
+          const bucket = bucketize(days);
+          row[bucket] += inv.dueAmount;
+          if (!row.oldestInvoiceDate || dueDate < new Date(row.oldestInvoiceDate)) {
+            row.oldestInvoiceDate = (inv.dueDate || inv.createdAt.slice(0, 10));
+          }
+        }
+
+        row.current = +row.current.toFixed(2);
+        row.b30 = +row.b30.toFixed(2);
+        row.b60 = +row.b60.toFixed(2);
+        row.b90 = +row.b90.toFixed(2);
+        row.b90plus = +row.b90plus.toFixed(2);
+        row.total = +(row.current + row.b30 + row.b60 + row.b90 + row.b90plus).toFixed(2);
+
+        if (row.total > 0) {
+          perClient.push(row);
+          totals.current += row.current;
+          totals.b30 += row.b30;
+          totals.b60 += row.b60;
+          totals.b90 += row.b90;
+          totals.b90plus += row.b90plus;
+          totals.total += row.total;
+        }
+      }
+
+      // Sort by total desc
+      perClient.sort((a, b) => b.total - a.total);
+
+      totals.current = +totals.current.toFixed(2);
+      totals.b30 = +totals.b30.toFixed(2);
+      totals.b60 = +totals.b60.toFixed(2);
+      totals.b90 = +totals.b90.toFixed(2);
+      totals.b90plus = +totals.b90plus.toFixed(2);
+      totals.total = +totals.total.toFixed(2);
+
+      return json({ asOn: todayStr, totals, perClient });
+    }
+
+    // -------- COMPLIANCES --------
+    if (route === 'compliances' && method === 'GET') {
+      const items = await db.collection('compliances').find({}).project({ _id: 0 }).sort({ name: 1 }).toArray();
+      // For each compliance, count applicable clients
+      const clients = await db.collection('clients').find({}).project({ _id: 0 }).toArray();
+      for (const c of items) {
+        c.applicableClients = clients
+          .filter(cl => Array.isArray(cl.applicableCompliances) && cl.applicableCompliances.includes(c.id))
+          .map(cl => ({ id: cl.id, name: cl.name, company: cl.company || '', gstin: cl.gstin || '' }));
+        c.clientCount = c.applicableClients.length;
+      }
+      return json({ compliances: items });
+    }
+    if (route === 'compliances' && method === 'POST') {
+      if (me.role !== 'admin') return json({ error: 'Forbidden' }, 403);
+      const body = await request.json();
+      const comp = {
+        id: uuidv4(),
+        name: body.name,
+        description: body.description || '',
+        frequency: body.frequency || 'one-time', // daily/weekly/monthly/quarterly/half-yearly/yearly/one-time
+        dueDay: body.dueDay || '', // e.g., "20th of next month"
+        createdAt: new Date().toISOString(),
+        createdBy: me.id,
+      };
+      await db.collection('compliances').insertOne(comp);
+      logActivity(db, me, 'create', 'compliance', comp.id, { name: comp.name });
+      const { _id, ...safe } = comp;
+      return json({ compliance: safe });
+    }
+    if (route.startsWith('compliances/') && method === 'PUT') {
+      if (me.role !== 'admin') return json({ error: 'Forbidden' }, 403);
+      const id = route.split('/')[1];
+      const body = await request.json();
+      delete body.id;
+      await db.collection('compliances').updateOne({ id }, { $set: body });
+      logActivity(db, me, 'update', 'compliance', id);
+      return json({ ok: true });
+    }
+    if (route.startsWith('compliances/') && method === 'DELETE') {
+      if (me.role !== 'admin') return json({ error: 'Forbidden' }, 403);
+      const id = route.split('/')[1];
+      await db.collection('compliances').deleteOne({ id });
+      // Remove from all clients' applicable lists
+      await db.collection('clients').updateMany({}, { $pull: { applicableCompliances: id } });
+      logActivity(db, me, 'delete', 'compliance', id);
+      return json({ ok: true });
+    }
+
+    // -------- USER PERMISSIONS --------
+    if (route.match(/^users\/[^/]+\/permissions$/) && method === 'PUT') {
+      if (me.role !== 'admin') return json({ error: 'Forbidden' }, 403);
+      const id = route.split('/')[1];
+      const { permissions } = await request.json();
+      await db.collection('users').updateOne({ id }, { $set: { permissions: permissions || {} } });
+      logActivity(db, me, 'update_permissions', 'user', id, { permissions });
+      return json({ ok: true });
+    }
+
+    // -------- DASHBOARD --------
+    if (route === 'dashboard' && method === 'GET') {
+      const leadsCol = db.collection('leads');
+      const tasksCol = db.collection('tasks');
+      const now = new Date();
+      const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+      const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).toISOString();
+
+      if (me.role === 'staff') {
+        const my = { assignedTo: me.id };
+        const [allMine, pending, inProg, done] = await Promise.all([
+          tasksCol.countDocuments(my),
+          tasksCol.countDocuments({ ...my, status: 'Pending' }),
+          tasksCol.countDocuments({ ...my, status: 'In Progress' }),
+          tasksCol.countDocuments({ ...my, status: 'Completed' }),
+        ]);
+        const overdue = await tasksCol.countDocuments({
+          ...my, status: { $ne: 'Completed' }, dueDate: { $ne: '', $lt: todayStart },
+        });
+        const dueToday = await tasksCol.countDocuments({
+          ...my, status: { $ne: 'Completed' }, dueDate: { $gte: todayStart, $lt: todayEnd },
+        });
+        const recent = await tasksCol.find(my).project({ _id: 0 }).sort({ createdAt: -1 }).limit(5).toArray();
+        // Tasks where I raised a discussion that's still pending
+        const myDiscussionsRaised = await tasksCol.find({
+          discussionRaisedBy: me.id, needsDiscussion: true,
+        }).project({ _id: 0 }).sort({ discussionRaisedAt: -1 }).limit(10).toArray();
+        return json({
+          role: 'staff',
+          stats: { allMine, pending, inProg, done, overdue, dueToday, awaitingDiscussion: myDiscussionsRaised.length },
+          recentTasks: recent,
+          awaitingDiscussion: myDiscussionsRaised,
+        });
+      }
+
+      const [totalLeads, newLeads, inProgress, converted, cancelled] = await Promise.all([
+        leadsCol.countDocuments({}),
+        leadsCol.countDocuments({ status: 'New' }),
+        leadsCol.countDocuments({ status: 'In Progress' }),
+        leadsCol.countDocuments({ status: 'Converted' }),
+        leadsCol.countDocuments({ status: 'Cancelled' }),
+      ]);
+      const [totalTasks, pendingTasks, inProgTasks, doneTasks] = await Promise.all([
+        tasksCol.countDocuments({}),
+        tasksCol.countDocuments({ status: 'Pending' }),
+        tasksCol.countDocuments({ status: 'In Progress' }),
+        tasksCol.countDocuments({ status: 'Completed' }),
+      ]);
+      const overdueTasks = await tasksCol.countDocuments({
+        status: { $ne: 'Completed' }, dueDate: { $ne: '', $lt: todayStart },
+      });
+
+      // Staff perf
+      const users = await db.collection('users').find({ role: { $in: ['staff', 'manager'] } }).project({ _id: 0, passwordHash: 0 }).toArray();
+      const perf = [];
+      for (const u of users) {
+        const [assigned, done, pending] = await Promise.all([
+          tasksCol.countDocuments({ assignedTo: u.id }),
+          tasksCol.countDocuments({ assignedTo: u.id, status: 'Completed' }),
+          tasksCol.countDocuments({ assignedTo: u.id, status: { $ne: 'Completed' } }),
+        ]);
+        perf.push({ id: u.id, name: u.name, role: u.role, assigned, done, pending });
+      }
+      const recentLeads = await leadsCol.find({}).project({ _id: 0 }).sort({ createdAt: -1 }).limit(5).toArray();
+      const recentTasks = await tasksCol.find({}).project({ _id: 0 }).sort({ createdAt: -1 }).limit(5).toArray();
+
+      // Tasks awaiting MY discussion (where discussionWith === me.id AND needsDiscussion)
+      const awaitingDiscussion = await tasksCol.find({
+        needsDiscussion: true, discussionWith: me.id,
+      }).project({ _id: 0 }).sort({ discussionRaisedAt: -1 }).limit(10).toArray();
+
+      return json({
+        role: me.role,
+        leads: { total: totalLeads, new: newLeads, inProgress, converted, cancelled },
+        tasks: { total: totalTasks, pending: pendingTasks, inProgress: inProgTasks, completed: doneTasks, overdue: overdueTasks, awaitingDiscussion: awaitingDiscussion.length },
+        staffPerformance: perf,
+        recentLeads,
+        recentTasks,
+        awaitingDiscussion,
+      });
+    }
+
+    // -------- ACTIVITY LOG --------
+    if (route === 'activity' && method === 'GET') {
+      const logs = await db.collection('activity_logs').find({}).project({ _id: 0 }).sort({ createdAt: -1 }).limit(100).toArray();
+      return json({ logs });
+    }
+
+    // -------- BACKUP & RESTORE (admin only) --------
+    // Collections that are part of a full backup
+    const BACKUP_COLLECTIONS = [
+      'users', 'leads', 'tasks', 'clients', 'invoices',
+      'payments', 'quotations', 'compliances', 'settings', 'activity_logs',
+    ];
+
+    // GET /api/backup/export -> returns a JSON file with all data
+    if (route === 'backup/export' && method === 'GET') {
+      if (me.role !== 'admin') return json({ error: 'Forbidden — admin only' }, 403);
+      const includeLogs = url.searchParams.get('includeLogs') !== 'false';
+      const includePasswords = url.searchParams.get('includePasswords') !== 'false';
+
+      const data = {};
+      const counts = {};
+      for (const name of BACKUP_COLLECTIONS) {
+        if (!includeLogs && name === 'activity_logs') continue;
+        const docs = await db.collection(name).find({}).project({ _id: 0 }).toArray();
+        // strip password hashes optionally (users still need a hash on restore, so default keep)
+        if (name === 'users' && !includePasswords) {
+          for (const u of docs) delete u.passwordHash;
+        }
+        data[name] = docs;
+        counts[name] = docs.length;
+      }
+
+      const payload = {
+        meta: {
+          appName: 'CA Practice Management',
+          schemaVersion: 1,
+          exportedAt: new Date().toISOString(),
+          exportedBy: { id: me.id, email: me.email, name: me.name },
+          dbName: DB_NAME,
+          includeLogs,
+          includePasswords,
+          counts,
+        },
+        data,
+      };
+      logActivity(db, me, 'export', 'backup', 'full', { counts });
+      const filename = `ca-backup-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.json`;
+      return new NextResponse(JSON.stringify(payload, null, 2), {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Content-Disposition': `attachment; filename="${filename}"`,
+        },
+      });
+    }
+
+    // POST /api/backup/import -> restores from JSON payload
+    // body: { mode: 'replace' | 'merge', payload: <export JSON>, collections?: [...] }
+    if (route === 'backup/import' && method === 'POST') {
+      if (me.role !== 'admin') return json({ error: 'Forbidden — admin only' }, 403);
+      const body = await request.json();
+      const mode = body.mode === 'replace' ? 'replace' : 'merge';
+      const payload = body.payload;
+      if (!payload || !payload.data || typeof payload.data !== 'object') {
+        return json({ error: 'Invalid backup file: missing data section' }, 400);
+      }
+      if (payload.meta && payload.meta.appName && payload.meta.appName !== 'CA Practice Management') {
+        return json({ error: `Backup is for a different app: ${payload.meta.appName}` }, 400);
+      }
+      const onlyCollections = Array.isArray(body.collections) && body.collections.length
+        ? body.collections.filter(c => BACKUP_COLLECTIONS.includes(c))
+        : BACKUP_COLLECTIONS;
+
+      const summary = {};
+      for (const name of onlyCollections) {
+        const docs = Array.isArray(payload.data[name]) ? payload.data[name] : [];
+        const col = db.collection(name);
+
+        if (mode === 'replace') {
+          // Protect the currently-logged-in admin from being wiped if not in backup
+          if (name === 'users') {
+            const incomingIds = new Set(docs.map(d => d.id).filter(Boolean));
+            if (!incomingIds.has(me.id)) {
+              // Keep self; only delete others
+              await col.deleteMany({ id: { $ne: me.id } });
+            } else {
+              await col.deleteMany({});
+            }
+          } else {
+            await col.deleteMany({});
+          }
+        }
+
+        let inserted = 0, updated = 0, skipped = 0;
+        for (const doc of docs) {
+          if (!doc || typeof doc !== 'object') { skipped++; continue; }
+          // Strip _id if accidentally present
+          delete doc._id;
+          // Ensure id exists (UUIDs are mandatory)
+          if (!doc.id) doc.id = uuidv4();
+
+          // For users without passwordHash, set a placeholder so login still requires a reset
+          if (name === 'users' && !doc.passwordHash) {
+            // Use a known-bad hash so account exists but cannot log in until admin resets
+            doc.passwordHash = await bcrypt.hash(uuidv4(), 10);
+          }
+
+          if (mode === 'replace') {
+            await col.insertOne(doc);
+            inserted++;
+          } else {
+            // Merge: upsert by id
+            const exists = await col.findOne({ id: doc.id });
+            if (exists) {
+              const { id: _id1, ...rest } = doc;
+              await col.updateOne({ id: doc.id }, { $set: rest });
+              updated++;
+            } else {
+              await col.insertOne(doc);
+              inserted++;
+            }
+          }
+        }
+        summary[name] = { total: docs.length, inserted, updated, skipped };
+      }
+
+      logActivity(db, me, 'import', 'backup', 'full', { mode, summary });
+      return json({ ok: true, mode, summary });
+    }
+
+    // POST /api/backup/clear-old-data -> deletes old records as of a selected date
+    if (route === 'backup/clear-old-data' && method === 'POST') {
+      if (me.role !== 'admin') return json({ error: 'Forbidden — admin only' }, 403);
+      const body = await request.json();
+      const asOnDate = body.asOnDate; // "YYYY-MM-DD"
+      if (!asOnDate || !/^\d{4}-\d{2}-\d{2}$/.test(asOnDate)) {
+        return json({ error: 'Invalid or missing asOnDate format (expected YYYY-MM-DD)' }, 400);
+      }
+      const categories = Array.isArray(body.categories) ? body.categories : [];
+      
+      const endOfIsoDate = `${asOnDate}T23:59:59.999Z`;
+      const summary = {};
+      
+      // 1. Tasks
+      if (categories.includes('tasks')) {
+        const q = {
+          $or: [
+            { createdAt: { $lte: endOfIsoDate } },
+            { dueDate: { $ne: '', $lte: asOnDate } }
+          ]
+        };
+        const res = await db.collection('tasks').deleteMany(q);
+        summary.tasks = res.deletedCount || 0;
+      }
+      
+      // 2. Leads
+      if (categories.includes('leads')) {
+        const q = {
+          $or: [
+            { createdAt: { $lte: endOfIsoDate } },
+            { followUpDate: { $ne: '', $lte: asOnDate } }
+          ]
+        };
+        const res = await db.collection('leads').deleteMany(q);
+        summary.leads = res.deletedCount || 0;
+      }
+      
+      // 3. Invoices & Payments
+      if (categories.includes('invoices_payments')) {
+        // Find invoices to delete first so we can remove their payments
+        const invQuery = {
+          $or: [
+            { createdAt: { $lte: endOfIsoDate } },
+            { invoiceDate: { $lte: asOnDate } },
+            { dueDate: { $lte: asOnDate } }
+          ]
+        };
+        const invoicesToDelete = await db.collection('invoices').find(invQuery).project({ id: 1 }).toArray();
+        const invoiceIds = invoicesToDelete.map(i => i.id).filter(Boolean);
+        
+        // Delete invoices
+        const resInv = await db.collection('invoices').deleteMany(invQuery);
+        
+        // Delete payments linked to those deleted invoices
+        const payQueryLinked = { invoiceId: { $in: invoiceIds } };
+        // Delete payments directly based on payment date
+        const payQueryDirect = {
+          $or: [
+            { createdAt: { $lte: endOfIsoDate } },
+            { date: { $lte: asOnDate } }
+          ]
+        };
+        
+        const resPayLinked = await db.collection('payments').deleteMany(payQueryLinked);
+        const resPayDirect = await db.collection('payments').deleteMany({
+          ...payQueryDirect,
+          invoiceId: { $nin: invoiceIds }
+        });
+        
+        summary.invoices = resInv.deletedCount || 0;
+        summary.payments = (resPayLinked.deletedCount || 0) + (resPayDirect.deletedCount || 0);
+      }
+      
+      // 4. Quotations
+      if (categories.includes('quotations')) {
+        const q = {
+          $or: [
+            { createdAt: { $lte: endOfIsoDate } },
+            { quotationDate: { $lte: asOnDate } }
+          ]
+        };
+        const res = await db.collection('quotations').deleteMany(q);
+        summary.quotations = res.deletedCount || 0;
+      }
+      
+      // 5. Activity Logs
+      if (categories.includes('activity_logs')) {
+        const q = { createdAt: { $lte: endOfIsoDate } };
+        const res = await db.collection('activity_logs').deleteMany(q);
+        summary.activity_logs = res.deletedCount || 0;
+      }
+      
+      // 6. Compliances
+      if (categories.includes('compliances')) {
+        const q = { createdAt: { $lte: endOfIsoDate } };
+        const res = await db.collection('compliances').deleteMany(q);
+        summary.compliances = res.deletedCount || 0;
+      }
+      
+      logActivity(db, me, 'clear_old_data', 'backup', 'clear', { asOnDate, categories, summary });
+      return json({ ok: true, summary });
+    }
+
+    if (route === '' || route === 'health') {
+      return json({ ok: true, service: 'CA Practice Management API' });
+    }
+
+    return json({ error: `Route not found: ${method} /${route}` }, 404);
+  } catch (err) {
+    console.error('API error:', err);
+    return json({ error: err.message || 'Server error' }, 500);
+  }
+}
+
+export const GET = handle;
+export const POST = handle;
+export const PUT = handle;
+export const DELETE = handle;
+export const PATCH = handle;

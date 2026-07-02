@@ -1,0 +1,6 @@
+{
+  "name": "Practice Management Software",
+  "description": "A comprehensive Practice Management Software to manage clients, appointments, invoices, and documents.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
