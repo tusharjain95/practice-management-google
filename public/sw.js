@@ -80,13 +80,13 @@ self.addEventListener('fetch', (event) => {
       })
       .catch(() => {
         // Serve from cache if offline
-        return caches.match(event.request).then((cachedResponse) => {
+        return caches.match(event.request, { ignoreSearch: true }).then((cachedResponse) => {
           if (cachedResponse) {
             return cachedResponse;
           }
           // If navigation request fails, return cached root '/'
           if (event.request.mode === 'navigate') {
-            return caches.match('/');
+            return caches.match('/', { ignoreSearch: true });
           }
           return new Response('Offline mode enabled. Connect to internet to refresh.', {
             status: 503,

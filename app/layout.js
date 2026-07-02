@@ -5,7 +5,6 @@ export const metadata = {
   title: 'CA Practice Manager - Modern CRM for Chartered Accountants',
   description: 'Complete practice management software for CA firms - manage leads, tasks, staff, and generate professional quotations.',
   applicationName: 'CA Manager',
-  themeColor: '#4f46e5',
   appleWebApp: {
     capable: true,
     title: 'CA Manager',
@@ -33,7 +32,7 @@ export default function RootLayout({ children }) {
   return (
     <html lang="en">
       <head>
-        <link rel="manifest" href="/manifest.json?v=3" />
+        <link rel="manifest" href="/manifest.json" />
         <meta name="theme-color" content="#4f46e5" />
         <meta name="mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -49,7 +48,7 @@ export default function RootLayout({ children }) {
             __html: `
               if ('serviceWorker' in navigator) {
                 var registerSW = function() {
-                  navigator.serviceWorker.register('/sw.js?v=3', { scope: '/' })
+                  navigator.serviceWorker.register('/sw.js', { scope: '/' })
                     .then(function(reg) {
                       console.log('ServiceWorker registration successful with scope: ', reg.scope);
                     })
