@@ -5,7 +5,6 @@ export const metadata = {
   title: 'CA Practice Manager - Modern CRM for Chartered Accountants',
   description: 'Complete practice management software for CA firms - manage leads, tasks, staff, and generate professional quotations.',
   applicationName: 'CA Manager',
-  manifest: '/manifest.json',
   themeColor: '#4f46e5',
   appleWebApp: {
     capable: true,
@@ -49,7 +48,7 @@ export default function RootLayout({ children }) {
           dangerouslySetInnerHTML={{
             __html: `
               if ('serviceWorker' in navigator) {
-                window.addEventListener('load', function() {
+                var registerSW = function() {
                   navigator.serviceWorker.register('/sw.js')
                     .then(function(reg) {
                       console.log('ServiceWorker registration successful with scope: ', reg.scope);
@@ -57,7 +56,12 @@ export default function RootLayout({ children }) {
                     .catch(function(err) {
                       console.log('ServiceWorker registration failed: ', err);
                     });
-                });
+                };
+                if (document.readyState === 'complete' || document.readyState === 'interactive') {
+                  registerSW();
+                } else {
+                  window.addEventListener('load', registerSW);
+                }
               }
             `,
           }}
