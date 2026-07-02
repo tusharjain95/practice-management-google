@@ -25,6 +25,7 @@ CA Practice Manager replaces the spreadsheets, WhatsApp groups, and manual filin
 ### 🎯 Lead Management
 - Full CRUD with status pipeline (New → In Progress → Converted / Cancelled)
 - Filters by status, service type, assigned staff
+- Dynamic column-based sorting (by Name, Contact, Service, Source, Status, Assigned, and Follow-up date)
 - Per-lead follow-up notes with timestamp + author
 - Follow-up dates with calendar integration
 - One-click **Convert Lead → Task** workflow (preserves lead linkage)
@@ -35,8 +36,9 @@ CA Practice Manager replaces the spreadsheets, WhatsApp groups, and manual filin
 - Priorities (Low, Medium, High, Urgent) with color coding
 - Comments per task with author + timestamp
 - Filter by status, priority, category, assignee
+- Dynamic column-based sorting (by Title, Category, Priority, Status, Due Date, and Assigned Staff)
 - Automatic **overdue** detection and visual flagging
-- **🔁 Recurring tasks** — Monthly / Quarterly / Yearly. On completion, the next occurrence auto-spawns with shifted due date (idempotency-protected)
+- 🔁 Recurring tasks — Monthly / Quarterly / Yearly. On completion, the next occurrence auto-spawns with shifted due date (idempotency-protected)
 
 ### 🏢 Client Management
 - Full client master with GSTIN, PAN, address, contact details
@@ -98,6 +100,17 @@ CA Practice Manager replaces the spreadsheets, WhatsApp groups, and manual filin
 - Case-insensitive partial match
 - Click any result to navigate
 
+### 🟢 WhatsApp Notifications & Daily PDF Roster
+- **Instant Alerts**: Automated WhatsApp notifications triggered on Task Assignment and Task Reassignment to keep staff informed in real-time.
+- **Daily 9:30 AM Roster**: Scheduled cron job that automatically generates a customized, high-quality PDF roster containing task summaries (Completed Yesterday, Assigned Yesterday, Pending, Overdue, and Due Today) and delivers it directly to opted-in users via WhatsApp.
+- **Dynamic JWT Security**: Automated PDF access secured using dynamic JSON Web Tokens (JWT) expiring in 24 hours, ensuring WhatsApp Meta API can safely fetch the compiled PDFs.
+- **Delivery Logging & Administration**: Comprehensive logs tracking every notification's status (Sent/Failed) with full recipient details, templates used, and response message IDs.
+
+### ⚡ Performance & Scalability
+- **Cursor-based Pagination**: Infinite scroll / paginated APIs across Leads, Tasks, Clients, Invoices, Payments, and Activity Logs.
+- **Database Optimizations**: Optimized database index structures on MongoDB for rapid compound lookups and complex relational aggregations.
+- **Background Throttling**: Auto-reload of reminders and real-time polling automatically paused when the application tab is hidden or minimized, preserving resources.
+
 ### 📤 Excel Export
 - Filter-aware exports on every table (Leads, Tasks, Clients, Invoices, Receivables, Ledger)
 - Generated client-side using SheetJS — no server load
@@ -110,6 +123,12 @@ CA Practice Manager replaces the spreadsheets, WhatsApp groups, and manual filin
 ### 📝 Activity Log
 - Every create/update/delete logged with user, entity, action, timestamp
 - Accessible via `GET /api/activity` for audit trail
+
+### 🧹 Administrative Data Clearing
+- One-click dynamic data clearing utility for Administrators
+- Purge selective data categories (Tasks, Leads, Invoices & Payments, Quotations, Compliances, Activity Logs) on or before a chosen "As On" date
+- Safe and secure design with multi-step confirmation, warning flags, and explicit typing keyword verification
+- Detailed action outcome summary and automatic system-audit logging of the operation
 
 ---
 
@@ -440,14 +459,26 @@ All endpoints prefixed with `/api/` and require `Authorization: Bearer <JWT>` ex
 | GET | `/api/branding` | Get branding settings |
 | PUT | `/api/branding` | Update branding (admin only) |
 | GET | `/api/activity` | Activity log (last 100) |
+| GET | `/api/backup/export` | Export all collections as JSON file (admin only) |
+| POST | `/api/backup/import` | Restore database collections from a JSON backup file (admin only) |
+| POST | `/api/backup/clear-old-data` | Purge historical data on/before a selected date for specific categories (admin only) |
+
+### WhatsApp & Automation
+| Method | Endpoint | Description |
+|---|---|---|
+| GET/POST | `/api/cron/daily-whatsapp-roster` | Scheduled cron job to deliver Daily PDF task rosters (secured via CRON_SECRET) |
+| GET | `/api/whatsapp/pdf-roster?token=<JWT>` | Secured dynamic PDF task roster endpoint (expires in 24 hours) |
+| POST | `/api/whatsapp/test` | Trigger a test WhatsApp notification to a selected or manual recipient (admin only) |
+| GET | `/api/whatsapp/logs` | List WhatsApp logs with pagination, status, and message IDs (admin/manager only) |
 
 ---
 
 ## 🗂️ Data Model
 
 ```
-users          { id, email, passwordHash, name, role, active, createdAt }
-leads          { id, name, phone, email, company, serviceType, source, status, assignedTo, followUpDate, notes[], createdAt }
+users                  { id, email, passwordHash, name, role, active, whatsappNumber, whatsappOptIn, whatsappNotificationsEnabled, dailyRosterEnabled, createdAt }
+whatsapp_notifications  { id, type, recipientName, recipientNumber, templateName, status, messageId, error, createdAt }
+leads                  { id, name, phone, email, company, serviceType, source, status, assignedTo, followUpDate, notes[], createdAt }
 tasks          { id, title, description, category, priority, dueDate, assignedTo, status, leadId, clientName, recurrence, recurrenceSpawned, comments[], createdAt }
 clients        { id, name, company, phone, email, gstin, pan, address, openingBalance, openingBalanceAsOn, notes, createdAt }
 invoices       { id, invoiceNumber, clientId, clientName, items[], gstApplicable, subtotal, gstAmount, total, dueDate, status, createdAt }
@@ -508,6 +539,7 @@ Open an issue with:
 ## 🗺️ Roadmap
 
 - [ ] Email integration — send invoices/quotations to clients (SendGrid/Resend)
+- [x] WhatsApp Business API integration for task alerts & daily rosters
 - [ ] WhatsApp Business API integration for invoice send
 - [ ] Payment receipts (PDF) on payment record
 - [ ] Multi-firm support (multiple branding profiles)

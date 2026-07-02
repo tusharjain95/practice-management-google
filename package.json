@@ -58,6 +58,7 @@
         "mongodb": "6.6.0",
         "next": "15.5.16",
         "next-themes": "0.4.6",
+        "pdfkit": "^0.19.1",
         "react": "18.3.1",
         "react-day-picker": "9.7.0",
         "react-dom": "18.3.1",
@@ -75,10 +76,13 @@
     },
     "devDependencies": {
         "@types/lodash": "4.17.24",
+        "@types/node": "20.17.6",
+        "@types/react": "19.2.17",
         "autoprefixer": "10.4.19",
         "globals": "16.2.0",
         "postcss": "8",
-        "tailwindcss": "3.4.1"
+        "tailwindcss": "3.4.1",
+        "typescript": "5.8.2"
     },
     "overrides": {
         "follow-redirects": "1.16.0",

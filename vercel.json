@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/daily-whatsapp-roster",
+      "schedule": "0 4 * * *"
+    }
+  ]
+}

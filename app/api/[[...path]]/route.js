@@ -5,13 +5,24 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import fs from 'fs';
 import path from 'path';
+import {
+  sendTaskAssignedWhatsApp,
+  sendTaskReassignedWhatsApp,
+  sendDailyRosterPdfWhatsApp,
+  generateRosterPdfBuffer,
+  sendWhatsAppTemplateMessage,
+  logNotification
+} from '@/lib/whatsapp/client';
+
+export const runtime = 'nodejs';
+export const preferredRegion = 'sin1';
 
 const MONGO_URL = process.env.MONGO_URL;
 const DB_NAME = process.env.DB_NAME || 'ca_practice';
 const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret';
 
 let cached = global._mongo;
-if (!cached) cached = global._mongo = { client: null, db: null };
+if (!cached) cached = global._mongo = { client: null, db: null, promise: null };
 
 const DB_FILE = '/memory/db.json';
 
@@ -319,15 +330,19 @@ async function getDb() {
     await seedAdmin(cached.db);
     return cached.db;
   }
+  if (!cached.promise) {
+    cached.promise = MongoClient.connect(MONGO_URL).then(client => {
+      cached.client = client;
+      return client.db(DB_NAME);
+    });
+  }
   try {
-    const client = new MongoClient(MONGO_URL);
-    await client.connect();
-    cached.client = client;
-    cached.db = client.db(DB_NAME);
+    cached.db = await cached.promise;
     await seedAdmin(cached.db);
     return cached.db;
   } catch (err) {
     console.warn('[AI Studio] Failed to connect to MongoDB, using JSON-fallback mock db.', err);
+    cached.promise = null; // Reset to allow retry
     cached.db = getMockDb();
     await seedAdmin(cached.db);
     return cached.db;
@@ -362,6 +377,14 @@ async function seedAdmin(db) {
       createdAt: new Date().toISOString(),
     });
   }
+}
+
+function getPaginationParams(searchParams) {
+  const page = Math.max(1, parseInt(searchParams.get('page') || '1', 10));
+  let limit = parseInt(searchParams.get('limit') || '25', 10);
+  if (isNaN(limit) || limit <= 0) limit = 25;
+  if (limit > 50) limit = 50;
+  return { page, limit };
 }
 
 function json(data, status = 200) {
@@ -463,6 +486,10 @@ async function handle(request, ctx) {
         name: body.name,
         role: body.role || 'staff',
         active: true,
+        whatsappNumber: body.whatsappNumber || '',
+        whatsappOptIn: !!body.whatsappOptIn,
+        whatsappNotificationsEnabled: !!body.whatsappNotificationsEnabled,
+        dailyRosterEnabled: !!body.dailyRosterEnabled,
         createdAt: new Date().toISOString(),
       };
       await db.collection('users').insertOne(user);
@@ -479,6 +506,10 @@ async function handle(request, ctx) {
       if (body.role) update.role = body.role;
       if (typeof body.active === 'boolean') update.active = body.active;
       if (body.password) update.passwordHash = await bcrypt.hash(body.password, 10);
+      if (body.whatsappNumber !== undefined) update.whatsappNumber = body.whatsappNumber;
+      if (body.whatsappOptIn !== undefined) update.whatsappOptIn = !!body.whatsappOptIn;
+      if (body.whatsappNotificationsEnabled !== undefined) update.whatsappNotificationsEnabled = !!body.whatsappNotificationsEnabled;
+      if (body.dailyRosterEnabled !== undefined) update.dailyRosterEnabled = !!body.dailyRosterEnabled;
       await db.collection('users').updateOne({ id }, { $set: update });
       logActivity(db, me, 'update', 'user', id, update);
       return json({ ok: true });
@@ -501,8 +532,19 @@ async function handle(request, ctx) {
       if (status) filter.status = status;
       if (assignedTo) filter.assignedTo = assignedTo;
       if (serviceType) filter.serviceType = serviceType;
-      const leads = await db.collection('leads').find(filter).project({ _id: 0 }).sort({ createdAt: -1 }).toArray();
-      return json({ leads });
+
+      const { page, limit } = getPaginationParams(url.searchParams);
+      const total = await db.collection('leads').countDocuments(filter);
+      const data = await db.collection('leads').find(filter).project({ _id: 0 }).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).toArray();
+
+      return json({
+        leads: data, // compat
+        data,
+        page,
+        limit,
+        total,
+        hasMore: total > page * limit
+      });
     }
     if (route === 'leads' && method === 'POST') {
       // Staff can create leads (auto-assigned to themselves)
@@ -614,12 +656,24 @@ async function handle(request, ctx) {
       if (category) filter.category = category;
       if (discussion === 'me') { filter.needsDiscussion = true; filter.discussionWith = me.id; }
       else if (discussion === 'true') filter.needsDiscussion = true;
-      const tasks = await db.collection('tasks').find(filter).project({ _id: 0 }).sort({ createdAt: -1 }).toArray();
+
+      const { page, limit } = getPaginationParams(url.searchParams);
+      const total = await db.collection('tasks').countDocuments(filter);
+      const data = await db.collection('tasks').find(filter).project({ _id: 0 }).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).toArray();
+
       // Backfill assignees for legacy single-assignee tasks
-      for (const t of tasks) {
+      for (const t of data) {
         if (!t.assignees || !t.assignees.length) t.assignees = t.assignedTo ? [t.assignedTo] : [];
       }
-      return json({ tasks });
+
+      return json({
+        tasks: data, // compat
+        data,
+        page,
+        limit,
+        total,
+        hasMore: total > page * limit
+      });
     }
     if (route === 'tasks' && method === 'POST') {
       const body = await request.json();
@@ -661,6 +715,27 @@ async function handle(request, ctx) {
       };
       await db.collection('tasks').insertOne(task);
       logActivity(db, me, 'create', 'task', task.id, { title: task.title });
+
+      // Send WhatsApp notifications asynchronously
+      try {
+        if (assignees && assignees.length) {
+          for (const uId of assignees) {
+            // Find assignee user details
+            db.collection('users').findOne({ id: uId }).then(targetUser => {
+              if (targetUser) {
+                sendTaskAssignedWhatsApp(db, targetUser, task).catch(err => {
+                  console.error('[WhatsApp Notification Background Error] Task Assigned:', err);
+                });
+              }
+            }).catch(err => {
+              console.error('[WhatsApp Trigger Fetch User Error] Task Assigned:', err);
+            });
+          }
+        }
+      } catch (err) {
+        console.error('[WhatsApp Trigger Error] Task creation:', err);
+      }
+
       const { _id, ...safe } = task;
       return json({ task: safe });
     }
@@ -757,6 +832,47 @@ async function handle(request, ctx) {
         }
       }
       logActivity(db, me, 'update', 'task', id, body);
+
+      // Check for WhatsApp Reassignment
+      try {
+        const oldAssignees = Array.isArray(existing.assignees) ? existing.assignees : (existing.assignedTo ? [existing.assignedTo] : []);
+        let hasAssigneesChanged = false;
+        let finalAssignees = oldAssignees;
+
+        if (updatedFields.assignees !== undefined) {
+          finalAssignees = updatedFields.assignees;
+          hasAssigneesChanged = true;
+        } else if (updatedFields.assignedTo !== undefined) {
+          finalAssignees = [updatedFields.assignedTo];
+          hasAssigneesChanged = true;
+        }
+
+        if (hasAssigneesChanged) {
+          // Find newly added assignees
+          const addedAssignees = finalAssignees.filter(id => !oldAssignees.includes(id));
+          if (addedAssignees.length > 0) {
+            // Fetch updated task data
+            db.collection('tasks').findOne({ id }).then(updatedTask => {
+              for (const uId of addedAssignees) {
+                db.collection('users').findOne({ id: uId }).then(targetUser => {
+                  if (targetUser) {
+                    sendTaskReassignedWhatsApp(db, targetUser, updatedTask || existing).catch(err => {
+                      console.error('[WhatsApp Notification Background Error] Task Reassigned:', err);
+                    });
+                  }
+                }).catch(err => {
+                  console.error('[WhatsApp Trigger Fetch User Error] Task Reassigned:', err);
+                });
+              }
+            }).catch(err => {
+              console.error('[WhatsApp Trigger Fetch Task Error] Task Reassigned:', err);
+            });
+          }
+        }
+      } catch (err) {
+        console.error('[WhatsApp Trigger Error] Task update:', err);
+      }
+
       return json({ ok: true });
     }
     if (route.startsWith('tasks/') && method === 'DELETE') {
@@ -770,8 +886,19 @@ async function handle(request, ctx) {
     // -------- QUOTATIONS --------
     if (route === 'quotations' && method === 'GET') {
       const filter = me.role === 'staff' ? { createdBy: me.id } : {};
-      const quotes = await db.collection('quotations').find(filter).project({ _id: 0 }).sort({ createdAt: -1 }).toArray();
-      return json({ quotations: quotes });
+
+      const { page, limit } = getPaginationParams(url.searchParams);
+      const total = await db.collection('quotations').countDocuments(filter);
+      const data = await db.collection('quotations').find(filter).project({ _id: 0 }).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).toArray();
+
+      return json({
+        quotations: data, // compat
+        data,
+        page,
+        limit,
+        total,
+        hasMore: total > page * limit
+      });
     }
     if (route === 'quotations' && method === 'POST') {
       const body = await request.json();
@@ -856,18 +983,103 @@ async function handle(request, ctx) {
 
     // -------- CLIENTS --------
     if (route === 'clients' && method === 'GET') {
-      const clients = await db.collection('clients').find({}).project({ _id: 0 }).sort({ createdAt: -1 }).toArray();
-      // compute net due per client
-      const enriched = [];
-      for (const c of clients) {
-        const invoices = await db.collection('invoices').find({ clientId: c.id }).project({ _id: 0 }).toArray();
-        const payments = await db.collection('payments').find({ clientId: c.id }).project({ _id: 0 }).toArray();
-        const billed = invoices.reduce((s, i) => s + (i.total || 0), 0);
-        const received = payments.reduce((s, p) => s + (p.amount || 0), 0);
-        const netDue = +((c.openingBalance || 0) + billed - received).toFixed(2);
-        enriched.push({ ...c, billed, received, netDue, invoiceCount: invoices.length });
+      const { page, limit } = getPaginationParams(url.searchParams);
+      const skip = (page - 1) * limit;
+
+      let enriched = [];
+      let total = 0;
+
+      // Check if real MongoDB (has aggregate function)
+      if (typeof db.collection('clients').aggregate === 'function') {
+        const countRes = await db.collection('clients').countDocuments({});
+        total = countRes;
+
+        const pipeline = [
+          { $sort: { createdAt: -1 } },
+          { $skip: skip },
+          { $limit: limit },
+          {
+            $lookup: {
+              from: 'invoices',
+              localField: 'id',
+              foreignField: 'clientId',
+              as: 'invoices'
+            }
+          },
+          {
+            $lookup: {
+              from: 'payments',
+              localField: 'id',
+              foreignField: 'clientId',
+              as: 'payments'
+            }
+          },
+          {
+            $project: {
+              _id: 0,
+              id: 1,
+              name: 1,
+              company: 1,
+              phone: 1,
+              email: 1,
+              address: 1,
+              gstin: 1,
+              pan: 1,
+              openingBalance: 1,
+              openingBalanceAsOn: 1,
+              notes: 1,
+              leadId: 1,
+              createdAt: 1,
+              createdBy: 1,
+              whatsappNumber: 1,
+              whatsappOptIn: 1,
+              whatsappNotificationsEnabled: 1,
+              dailyRosterEnabled: 1,
+              invoiceCount: { $size: '$invoices' },
+              billed: { $sum: '$invoices.total' },
+              received: { $sum: '$payments.amount' }
+            }
+          },
+          {
+            $addFields: {
+              netDue: {
+                $round: [
+                  {
+                    $subtract: [
+                      { $add: [ { $ifNull: ['$openingBalance', 0] }, '$billed' ] },
+                      '$received'
+                    ]
+                  },
+                  2
+                ]
+              }
+            }
+          }
+        ];
+        enriched = await db.collection('clients').aggregate(pipeline).toArray();
+      } else {
+        // Fallback for mock DB
+        const clients = await db.collection('clients').find({}).project({ _id: 0 }).sort({ createdAt: -1 }).toArray();
+        total = clients.length;
+        const pageClients = clients.slice(skip, skip + limit);
+        for (const c of pageClients) {
+          const invoices = await db.collection('invoices').find({ clientId: c.id }).project({ _id: 0 }).toArray();
+          const payments = await db.collection('payments').find({ clientId: c.id }).project({ _id: 0 }).toArray();
+          const billed = invoices.reduce((s, i) => s + (i.total || 0), 0);
+          const received = payments.reduce((s, p) => s + (p.amount || 0), 0);
+          const netDue = +((c.openingBalance || 0) + billed - received).toFixed(2);
+          enriched.push({ ...c, billed, received, netDue, invoiceCount: invoices.length });
+        }
       }
-      return json({ clients: enriched });
+
+      return json({
+        clients: enriched, // compat
+        data: enriched,
+        page,
+        limit,
+        total,
+        hasMore: total > page * limit
+      });
     }
     if (route === 'clients' && method === 'POST') {
       if (me.role === 'staff') return json({ error: 'Forbidden' }, 403);
@@ -1056,14 +1268,26 @@ async function handle(request, ctx) {
       const status = url.searchParams.get('status');
       if (clientId) filter.clientId = clientId;
       if (status) filter.status = status;
-      const invoices = await db.collection('invoices').find(filter).project({ _id: 0 }).sort({ createdAt: -1 }).toArray();
-      // attach paidAmount per invoice
-      for (const inv of invoices) {
+
+      const { page, limit } = getPaginationParams(url.searchParams);
+      const total = await db.collection('invoices').countDocuments(filter);
+      const data = await db.collection('invoices').find(filter).project({ _id: 0 }).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).toArray();
+
+      // attach paidAmount per invoice for the current page only
+      for (const inv of data) {
         const pays = await db.collection('payments').find({ invoiceId: inv.id }).toArray();
         inv.paidAmount = +pays.reduce((s, p) => s + (p.amount || 0), 0).toFixed(2);
         inv.dueAmount = +(inv.total - inv.paidAmount).toFixed(2);
       }
-      return json({ invoices });
+
+      return json({
+        invoices: data, // compat
+        data,
+        page,
+        limit,
+        total,
+        hasMore: total > page * limit
+      });
     }
     if (route === 'invoices' && method === 'POST') {
       if (me.role === 'staff') return json({ error: 'Forbidden' }, 403);
@@ -1130,8 +1354,19 @@ async function handle(request, ctx) {
       const invoiceId = url.searchParams.get('invoiceId');
       if (clientId) filter.clientId = clientId;
       if (invoiceId) filter.invoiceId = invoiceId;
-      const payments = await db.collection('payments').find(filter).project({ _id: 0 }).sort({ date: -1 }).toArray();
-      return json({ payments });
+
+      const { page, limit } = getPaginationParams(url.searchParams);
+      const total = await db.collection('payments').countDocuments(filter);
+      const data = await db.collection('payments').find(filter).project({ _id: 0 }).sort({ date: -1 }).skip((page - 1) * limit).limit(limit).toArray();
+
+      return json({
+        payments: data, // compat
+        data,
+        page,
+        limit,
+        total,
+        hasMore: total > page * limit
+      });
     }
     if (route === 'payments' && method === 'POST') {
       if (me.role === 'staff') return json({ error: 'Forbidden' }, 403);
@@ -1213,15 +1448,17 @@ async function handle(request, ctx) {
     // -------- SEARCH (global) --------
     if (route === 'search' && method === 'GET') {
       const q = (url.searchParams.get('q') || '').trim();
-      if (!q) return json({ results: [] });
+      if (q.length < 3) {
+        return json({ leads: [], tasks: [], clients: [], invoices: [], quotations: [] });
+      }
       const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
       const filterStaff = me.role === 'staff' ? { assignedTo: me.id } : {};
       const [leads, tasks, clients, invoices, quotations] = await Promise.all([
-        db.collection('leads').find({ ...filterStaff, $or: [{ name: rx }, { phone: rx }, { email: rx }, { company: rx }] }).project({ _id: 0 }).limit(10).toArray(),
-        db.collection('tasks').find({ ...filterStaff, $or: [{ title: rx }, { description: rx }, { clientName: rx }] }).project({ _id: 0 }).limit(10).toArray(),
-        me.role !== 'staff' ? db.collection('clients').find({ $or: [{ name: rx }, { company: rx }, { phone: rx }, { email: rx }, { gstin: rx }] }).project({ _id: 0 }).limit(10).toArray() : [],
-        me.role !== 'staff' ? db.collection('invoices').find({ $or: [{ invoiceNumber: rx }, { clientName: rx }, { companyName: rx }] }).project({ _id: 0 }).limit(10).toArray() : [],
-        me.role !== 'staff' ? db.collection('quotations').find({ $or: [{ quotationNumber: rx }, { clientName: rx }, { companyName: rx }] }).project({ _id: 0 }).limit(10).toArray() : [],
+        db.collection('leads').find({ ...filterStaff, $or: [{ name: rx }, { phone: rx }, { email: rx }, { company: rx }] }).project({ _id: 0 }).limit(5).toArray(),
+        db.collection('tasks').find({ ...filterStaff, $or: [{ title: rx }, { description: rx }, { clientName: rx }] }).project({ _id: 0 }).limit(5).toArray(),
+        me.role !== 'staff' ? db.collection('clients').find({ $or: [{ name: rx }, { company: rx }, { phone: rx }, { email: rx }, { gstin: rx }] }).project({ _id: 0 }).limit(5).toArray() : [],
+        me.role !== 'staff' ? db.collection('invoices').find({ $or: [{ invoiceNumber: rx }, { clientName: rx }, { companyName: rx }] }).project({ _id: 0 }).limit(5).toArray() : [],
+        me.role !== 'staff' ? db.collection('quotations').find({ $or: [{ quotationNumber: rx }, { clientName: rx }, { companyName: rx }] }).project({ _id: 0 }).limit(5).toArray() : [],
       ]);
       return json({ leads, tasks, clients, invoices, quotations });
     }
@@ -1516,8 +1753,18 @@ async function handle(request, ctx) {
 
     // -------- ACTIVITY LOG --------
     if (route === 'activity' && method === 'GET') {
-      const logs = await db.collection('activity_logs').find({}).project({ _id: 0 }).sort({ createdAt: -1 }).limit(100).toArray();
-      return json({ logs });
+      const { page, limit } = getPaginationParams(url.searchParams);
+      const total = await db.collection('activity_logs').countDocuments({});
+      const data = await db.collection('activity_logs').find({}).project({ _id: 0 }).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).toArray();
+
+      return json({
+        logs: data, // compat
+        data,
+        page,
+        limit,
+        total,
+        hasMore: total > page * limit
+      });
     }
 
     // -------- BACKUP & RESTORE (admin only) --------
@@ -1745,6 +1992,146 @@ async function handle(request, ctx) {
       
       logActivity(db, me, 'clear_old_data', 'backup', 'clear', { asOnDate, categories, summary });
       return json({ ok: true, summary });
+    }
+
+    // -------- WHATSAPP PDF ROSTER (public but JWT-secured) --------
+    if (route === 'whatsapp/pdf-roster' && method === 'GET') {
+      const token = url.searchParams.get('token');
+      if (!token) {
+        return new Response('Missing authorization token', { status: 400 });
+      }
+
+      try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        const { userId, date } = decoded;
+
+        const db = await getDb();
+        const user = await db.collection('users').findOne({ id: userId });
+        if (!user) {
+          return new Response('User not found', { status: 404 });
+        }
+
+        // Yesterday date calculation (IST)
+        const dObj = new Date(date);
+        const yesterdayObj = new Date(dObj.getTime() - 24 * 60 * 60 * 1000);
+        const options = { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' };
+        const formatter = new Intl.DateTimeFormat('en-CA', options);
+        const yesterdayStr = formatter.format(yesterdayObj);
+
+        // Fetch tasks
+        const completedYesterdayTasks = await db.collection('tasks').find({
+          $or: [{ assignedTo: userId }, { assignees: userId }],
+          status: 'Completed',
+          updatedAt: { $regex: '^' + yesterdayStr }
+        }).toArray();
+
+        const assignedYesterdayTasks = await db.collection('tasks').find({
+          $or: [{ assignedTo: userId }, { assignees: userId }],
+          createdAt: { $regex: '^' + yesterdayStr }
+        }).toArray();
+
+        const pendingTasks = await db.collection('tasks').find({
+          $or: [{ assignedTo: userId }, { assignees: userId }],
+          status: { $ne: 'Completed' }
+        }).sort({ dueDate: 1 }).toArray();
+
+        const overdueTasks = pendingTasks.filter(t => t.dueDate && t.dueDate < date);
+        const dueTodayTasks = pendingTasks.filter(t => t.dueDate === date);
+        const otherPendingTasks = pendingTasks.filter(t => !t.dueDate || t.dueDate > date);
+
+        const pdfData = {
+          completedYesterdayCount: completedYesterdayTasks.length,
+          assignedYesterdayCount: assignedYesterdayTasks.length,
+          pendingCount: pendingTasks.length,
+          overdueCount: overdueTasks.length,
+          dueTodayCount: dueTodayTasks.length,
+          overdueTasks,
+          dueTodayTasks,
+          pendingTasks: otherPendingTasks
+        };
+
+        const pdfBuffer = await generateRosterPdfBuffer(user.name, date, pdfData);
+
+        return new Response(pdfBuffer, {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/pdf',
+            'Content-Disposition': `inline; filename="roster_${user.name.toLowerCase().replace(/[^a-z0-9]/g, '_')}_${date}.pdf"`,
+            'Content-Length': pdfBuffer.length.toString()
+          }
+        });
+      } catch (err) {
+        console.error('[PDF Roster Error]', err);
+        return new Response(`Unauthorized or expired token: ${err.message}`, { status: 401 });
+      }
+    }
+
+    // -------- WHATSAPP ADMIN TEST ENDPOINT --------
+    if (route === 'whatsapp/test' && method === 'POST') {
+      if (me.role !== 'admin') {
+        return json({ error: 'Forbidden: Admin access required' }, 403);
+      }
+
+      const body = await request.json();
+      const { userId, templateName, phone } = body;
+
+      const targetUser = userId 
+        ? await db.collection('users').findOne({ id: userId })
+        : { id: 'test_admin', name: 'Test Recipient', whatsappNumber: phone || me.whatsappNumber || '', whatsappOptIn: true, whatsappNotificationsEnabled: true };
+
+      if (!targetUser || !targetUser.whatsappNumber) {
+        return json({ error: 'No recipient phone number provided or found' }, 400);
+      }
+
+      const testTemplate = templateName || 'task_assigned_notification';
+      const testParams = [
+        targetUser.name,
+        'Test Demo Task',
+        new Date().toISOString().slice(0, 10),
+        'High'
+      ];
+
+      const res = await sendWhatsAppTemplateMessage(targetUser.whatsappNumber, testTemplate, testParams);
+
+      await logNotification(db, {
+        type: 'TEST_NOTIFICATION',
+        user: targetUser,
+        templateName: testTemplate,
+        status: res.success ? 'sent' : 'failed',
+        messageId: res.messageId,
+        error: res.error
+      });
+
+      return json({
+        success: res.success,
+        messageId: res.messageId,
+        error: res.error,
+        recipient: {
+          name: targetUser.name,
+          phone: targetUser.whatsappNumber
+        }
+      });
+    }
+
+    // -------- WHATSAPP LOGS (admin/manager only) --------
+    if (route === 'whatsapp/logs' && method === 'GET') {
+      if (me.role === 'staff') return json({ error: 'Forbidden' }, 403);
+      const { page, limit } = getPaginationParams(url.searchParams);
+      const total = await db.collection('whatsapp_notifications').countDocuments({});
+      const data = await db.collection('whatsapp_notifications').find({})
+        .sort({ createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .toArray();
+
+      return json({
+        logs: data, // compat
+        data,
+        page,
+        limit,
+        total,
+        hasMore: total > page * limit
+      });
     }
 
     if (route === '' || route === 'health') {

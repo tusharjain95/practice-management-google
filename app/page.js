@@ -9,7 +9,7 @@ import {
   FileDown, ChevronRight, Wallet, Receipt, Palette, Bell,
   IndianRupee, Building2, ChevronLeft, RotateCcw, Upload, KeyRound,
   BarChart3, ClipboardCheck, ShieldCheck, Database, DownloadCloud, UploadCloud,
-  MessageSquare, Menu, X,
+  MessageSquare, Menu, X, ArrowUpDown, ArrowUp, ArrowDown,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -552,7 +552,15 @@ function RemindersBell({ user, setView }) {
   async function load() {
     try { setData(await call('reminders')); } catch {}
   }
-  useEffect(() => { load(); const t = setInterval(load, 60000); return () => clearInterval(t); }, []);
+  useEffect(() => {
+    load();
+    const t = setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        load();
+      }
+    }, 60000);
+    return () => clearInterval(t);
+  }, []);
 
   const count = data ? (data.dueToday.length + data.overdue.length + data.followUpsToday.length + data.followUpsOverdue.length) : 0;
   return (
@@ -941,6 +949,18 @@ function Leads({ user, viewParams = {}, setView }) {
   const [convertOpen, setConvertOpen] = useState(null);
   const [detail, setDetail] = useState(null);
 
+  const [sortField, setSortField] = useState('createdAt');
+  const [sortOrder, setSortOrder] = useState('desc');
+
+  function handleSort(field) {
+    if (sortField === field) {
+      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortOrder('asc');
+    }
+  }
+
   const canCreate = true; // all roles, including staff
   function canEditLead(l) { return user.role !== 'staff' || l.assignedTo === user.id; }
   function canDeleteLead() { return user.role !== 'staff'; }
@@ -965,14 +985,51 @@ function Leads({ user, viewParams = {}, setView }) {
   }, [viewParams.status, viewParams.serviceType, viewParams.assignedTo]);
 
   const filtered = useMemo(() => {
-    return leads.filter(l => {
+    const list = leads.filter(l => {
       if (statusFilter !== 'all' && l.status !== statusFilter) return false;
       if (serviceFilter !== 'all' && l.serviceType !== serviceFilter) return false;
       if (assignedFilter !== 'all' && l.assignedTo !== assignedFilter) return false;
       if (q && !`${l.name} ${l.company} ${l.phone} ${l.email}`.toLowerCase().includes(q.toLowerCase())) return false;
       return true;
     });
-  }, [leads, q, statusFilter, serviceFilter, assignedFilter]);
+
+    return [...list].sort((a, b) => {
+      let valA = '';
+      let valB = '';
+
+      if (sortField === 'name') {
+        valA = (a.name || '').toLowerCase();
+        valB = (b.name || '').toLowerCase();
+      } else if (sortField === 'contact') {
+        valA = (a.phone || '').toLowerCase();
+        valB = (b.phone || '').toLowerCase();
+      } else if (sortField === 'serviceType') {
+        valA = (a.serviceType || '').toLowerCase();
+        valB = (b.serviceType || '').toLowerCase();
+      } else if (sortField === 'source') {
+        valA = (a.source || '').toLowerCase();
+        valB = (b.source || '').toLowerCase();
+      } else if (sortField === 'status') {
+        valA = (a.status || '').toLowerCase();
+        valB = (b.status || '').toLowerCase();
+      } else if (sortField === 'assignedTo') {
+        const nameA = users.find(u => u.id === a.assignedTo)?.name || '';
+        const nameB = users.find(u => u.id === b.assignedTo)?.name || '';
+        valA = nameA.toLowerCase();
+        valB = nameB.toLowerCase();
+      } else if (sortField === 'followUpDate') {
+        valA = a.followUpDate || '';
+        valB = b.followUpDate || '';
+      } else if (sortField === 'createdAt') {
+        valA = a.createdAt || '';
+        valB = b.createdAt || '';
+      }
+
+      if (valA < valB) return sortOrder === 'asc' ? -1 : 1;
+      if (valA > valB) return sortOrder === 'asc' ? 1 : -1;
+      return 0;
+    });
+  }, [leads, q, statusFilter, serviceFilter, assignedFilter, sortField, sortOrder, users]);
 
   function userName(id) { return users.find(u => u.id === id)?.name || '-'; }
 
@@ -1036,13 +1093,76 @@ function Leads({ user, viewParams = {}, setView }) {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Contact</TableHead>
-                <TableHead>Service</TableHead>
-                <TableHead>Source</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Assigned</TableHead>
-                <TableHead>Follow-up</TableHead>
+                <TableHead className="cursor-pointer select-none hover:bg-slate-100/50 transition py-3" onClick={() => handleSort('name')}>
+                  <div className="flex items-center gap-1">
+                    Name
+                    {sortField === 'name' ? (
+                      sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-indigo-600" /> : <ArrowDown className="w-3.5 h-3.5 text-indigo-600" />
+                    ) : (
+                      <ArrowUpDown className="w-3.5 h-3.5 text-slate-300" />
+                    )}
+                  </div>
+                </TableHead>
+                <TableHead className="cursor-pointer select-none hover:bg-slate-100/50 transition py-3" onClick={() => handleSort('contact')}>
+                  <div className="flex items-center gap-1">
+                    Contact
+                    {sortField === 'contact' ? (
+                      sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-indigo-600" /> : <ArrowDown className="w-3.5 h-3.5 text-indigo-600" />
+                    ) : (
+                      <ArrowUpDown className="w-3.5 h-3.5 text-slate-300" />
+                    )}
+                  </div>
+                </TableHead>
+                <TableHead className="cursor-pointer select-none hover:bg-slate-100/50 transition py-3" onClick={() => handleSort('serviceType')}>
+                  <div className="flex items-center gap-1">
+                    Service
+                    {sortField === 'serviceType' ? (
+                      sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-indigo-600" /> : <ArrowDown className="w-3.5 h-3.5 text-indigo-600" />
+                    ) : (
+                      <ArrowUpDown className="w-3.5 h-3.5 text-slate-300" />
+                    )}
+                  </div>
+                </TableHead>
+                <TableHead className="cursor-pointer select-none hover:bg-slate-100/50 transition py-3" onClick={() => handleSort('source')}>
+                  <div className="flex items-center gap-1">
+                    Source
+                    {sortField === 'source' ? (
+                      sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-indigo-600" /> : <ArrowDown className="w-3.5 h-3.5 text-indigo-600" />
+                    ) : (
+                      <ArrowUpDown className="w-3.5 h-3.5 text-slate-300" />
+                    )}
+                  </div>
+                </TableHead>
+                <TableHead className="cursor-pointer select-none hover:bg-slate-100/50 transition py-3" onClick={() => handleSort('status')}>
+                  <div className="flex items-center gap-1">
+                    Status
+                    {sortField === 'status' ? (
+                      sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-indigo-600" /> : <ArrowDown className="w-3.5 h-3.5 text-indigo-600" />
+                    ) : (
+                      <ArrowUpDown className="w-3.5 h-3.5 text-slate-300" />
+                    )}
+                  </div>
+                </TableHead>
+                <TableHead className="cursor-pointer select-none hover:bg-slate-100/50 transition py-3" onClick={() => handleSort('assignedTo')}>
+                  <div className="flex items-center gap-1">
+                    Assigned
+                    {sortField === 'assignedTo' ? (
+                      sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-indigo-600" /> : <ArrowDown className="w-3.5 h-3.5 text-indigo-600" />
+                    ) : (
+                      <ArrowUpDown className="w-3.5 h-3.5 text-slate-300" />
+                    )}
+                  </div>
+                </TableHead>
+                <TableHead className="cursor-pointer select-none hover:bg-slate-100/50 transition py-3" onClick={() => handleSort('followUpDate')}>
+                  <div className="flex items-center gap-1">
+                    Follow-up
+                    {sortField === 'followUpDate' ? (
+                      sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-indigo-600" /> : <ArrowDown className="w-3.5 h-3.5 text-indigo-600" />
+                    ) : (
+                      <ArrowUpDown className="w-3.5 h-3.5 text-slate-300" />
+                    )}
+                  </div>
+                </TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
@@ -1295,6 +1415,18 @@ function Tasks({ user, viewParams = {}, setView }) {
   const [editing, setEditing] = useState(null);
   const [detail, setDetail] = useState(null);
 
+  const [sortField, setSortField] = useState('createdAt');
+  const [sortOrder, setSortOrder] = useState('desc');
+
+  function handleSort(field) {
+    if (sortField === field) {
+      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortOrder('asc');
+    }
+  }
+
   const canCreate = true; // All roles can create tasks (staff auto-assigns to self)
   const canEditAny = user.role !== 'staff'; // Only managers/admins can edit any task fully
   function canEditTask(t) {
@@ -1331,7 +1463,7 @@ function Tasks({ user, viewParams = {}, setView }) {
   }
   const filtered = useMemo(() => {
     const today = new Date(); today.setHours(0,0,0,0);
-    return tasks.filter(t => {
+    const list = tasks.filter(t => {
       if (statusFilter === 'overdue') {
         if (t.status === 'Completed') return false;
         if (!t.dueDate || new Date(t.dueDate) >= today) return false;
@@ -1349,7 +1481,44 @@ function Tasks({ user, viewParams = {}, setView }) {
       if (q && !`${t.title} ${t.description} ${t.clientName || ''}`.toLowerCase().includes(q.toLowerCase())) return false;
       return true;
     });
-  }, [tasks, q, statusFilter, priorityFilter, categoryFilter, assignedFilter]);
+
+    const priorityOrder = { 'High': 1, 'Medium': 2, 'Low': 3 };
+
+    return [...list].sort((a, b) => {
+      let valA = '';
+      let valB = '';
+
+      if (sortField === 'title') {
+        valA = (a.title || '').toLowerCase();
+        valB = (b.title || '').toLowerCase();
+      } else if (sortField === 'category') {
+        valA = (a.category || '').toLowerCase();
+        valB = (b.category || '').toLowerCase();
+      } else if (sortField === 'priority') {
+        const orderA = priorityOrder[a.priority] || 4;
+        const orderB = priorityOrder[b.priority] || 4;
+        return sortOrder === 'asc' ? orderA - orderB : orderB - orderA;
+      } else if (sortField === 'status') {
+        valA = (a.status || '').toLowerCase();
+        valB = (b.status || '').toLowerCase();
+      } else if (sortField === 'dueDate') {
+        valA = a.dueDate || '9999-99-99';
+        valB = b.dueDate || '9999-99-99';
+      } else if (sortField === 'assignedTo') {
+        const nameA = userName(a.assignedTo) || '';
+        const nameB = userName(b.assignedTo) || '';
+        valA = nameA.toLowerCase();
+        valB = nameB.toLowerCase();
+      } else if (sortField === 'createdAt') {
+        valA = a.createdAt || '';
+        valB = b.createdAt || '';
+      }
+
+      if (valA < valB) return sortOrder === 'asc' ? -1 : 1;
+      if (valA > valB) return sortOrder === 'asc' ? 1 : -1;
+      return 0;
+    });
+  }, [tasks, q, statusFilter, priorityFilter, categoryFilter, assignedFilter, discussionFilter, sortField, sortOrder, users]);
 
   async function deleteTask(id) {
     if (!confirm('Delete task?')) return;
@@ -1431,12 +1600,66 @@ function Tasks({ user, viewParams = {}, setView }) {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Title</TableHead>
-                <TableHead>Category</TableHead>
-                <TableHead>Priority</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Due</TableHead>
-                <TableHead>Assigned</TableHead>
+                <TableHead className="cursor-pointer select-none hover:bg-slate-100/50 transition py-3" onClick={() => handleSort('title')}>
+                  <div className="flex items-center gap-1">
+                    Title
+                    {sortField === 'title' ? (
+                      sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-indigo-600" /> : <ArrowDown className="w-3.5 h-3.5 text-indigo-600" />
+                    ) : (
+                      <ArrowUpDown className="w-3.5 h-3.5 text-slate-300" />
+                    )}
+                  </div>
+                </TableHead>
+                <TableHead className="cursor-pointer select-none hover:bg-slate-100/50 transition py-3" onClick={() => handleSort('category')}>
+                  <div className="flex items-center gap-1">
+                    Category
+                    {sortField === 'category' ? (
+                      sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-indigo-600" /> : <ArrowDown className="w-3.5 h-3.5 text-indigo-600" />
+                    ) : (
+                      <ArrowUpDown className="w-3.5 h-3.5 text-slate-300" />
+                    )}
+                  </div>
+                </TableHead>
+                <TableHead className="cursor-pointer select-none hover:bg-slate-100/50 transition py-3" onClick={() => handleSort('priority')}>
+                  <div className="flex items-center gap-1">
+                    Priority
+                    {sortField === 'priority' ? (
+                      sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-indigo-600" /> : <ArrowDown className="w-3.5 h-3.5 text-indigo-600" />
+                    ) : (
+                      <ArrowUpDown className="w-3.5 h-3.5 text-slate-300" />
+                    )}
+                  </div>
+                </TableHead>
+                <TableHead className="cursor-pointer select-none hover:bg-slate-100/50 transition py-3" onClick={() => handleSort('status')}>
+                  <div className="flex items-center gap-1">
+                    Status
+                    {sortField === 'status' ? (
+                      sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-indigo-600" /> : <ArrowDown className="w-3.5 h-3.5 text-indigo-600" />
+                    ) : (
+                      <ArrowUpDown className="w-3.5 h-3.5 text-slate-300" />
+                    )}
+                  </div>
+                </TableHead>
+                <TableHead className="cursor-pointer select-none hover:bg-slate-100/50 transition py-3" onClick={() => handleSort('dueDate')}>
+                  <div className="flex items-center gap-1">
+                    Due
+                    {sortField === 'dueDate' ? (
+                      sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-indigo-600" /> : <ArrowDown className="w-3.5 h-3.5 text-indigo-600" />
+                    ) : (
+                      <ArrowUpDown className="w-3.5 h-3.5 text-slate-300" />
+                    )}
+                  </div>
+                </TableHead>
+                <TableHead className="cursor-pointer select-none hover:bg-slate-100/50 transition py-3" onClick={() => handleSort('assignedTo')}>
+                  <div className="flex items-center gap-1">
+                    Assigned
+                    {sortField === 'assignedTo' ? (
+                      sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-indigo-600" /> : <ArrowDown className="w-3.5 h-3.5 text-indigo-600" />
+                    ) : (
+                      <ArrowUpDown className="w-3.5 h-3.5 text-slate-300" />
+                    )}
+                  </div>
+                </TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
@@ -2091,19 +2314,33 @@ function AdminResetPasswordDialog({ target, onClose }) {
 
 function UserForm({ initial, onClose, onSaved }) {
   const { call } = useApi();
-  const [f, setF] = useState(initial || { name: '', email: '', role: 'staff', password: '' });
+  const [f, setF] = useState(initial || { name: '', email: '', role: 'staff', password: '', whatsappNumber: '', whatsappOptIn: false, whatsappNotificationsEnabled: false, dailyRosterEnabled: false });
   const [saving, setSaving] = useState(false);
   async function submit(e) {
     e.preventDefault(); setSaving(true);
     try {
       if (initial) {
-        const body = { name: f.name, role: f.role };
+        const body = {
+          name: f.name,
+          role: f.role,
+          whatsappNumber: f.whatsappNumber || '',
+          whatsappOptIn: !!f.whatsappOptIn,
+          whatsappNotificationsEnabled: !!f.whatsappNotificationsEnabled,
+          dailyRosterEnabled: !!f.dailyRosterEnabled
+        };
         if (f.password) body.password = f.password;
         await call(`users/${initial.id}`, { method: 'PUT', body });
         toast.success('User updated');
       } else {
         if (!f.password) { toast.error('Password required'); setSaving(false); return; }
-        await call('users', { method: 'POST', body: f });
+        const body = {
+          ...f,
+          whatsappNumber: f.whatsappNumber || '',
+          whatsappOptIn: !!f.whatsappOptIn,
+          whatsappNotificationsEnabled: !!f.whatsappNotificationsEnabled,
+          dailyRosterEnabled: !!f.dailyRosterEnabled
+        };
+        await call('users', { method: 'POST', body });
         toast.success('User created');
       }
       onSaved();
@@ -2125,7 +2362,31 @@ function UserForm({ initial, onClose, onSaved }) {
           <Field label={initial ? 'New Password (leave blank to keep)' : 'Password *'}>
             <Input type="password" value={f.password || ''} onChange={e => setF({ ...f, password: e.target.value })} />
           </Field>
-          <DialogFooter>
+          
+          <Field label="WhatsApp Number (e.g. 919876543210)">
+            <Input type="text" placeholder="e.g. 919876543210" value={f.whatsappNumber || ''} onChange={e => setF({ ...f, whatsappNumber: e.target.value })} />
+          </Field>
+
+          <div className="space-y-2 pt-2 border-t border-slate-100">
+            <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">WhatsApp Configuration</div>
+            
+            <label className="flex items-center space-x-2 text-sm cursor-pointer select-none">
+              <input type="checkbox" checked={!!f.whatsappOptIn} onChange={e => setF({ ...f, whatsappOptIn: e.target.checked })} className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 h-4 w-4" />
+              <span className="text-slate-700 font-medium">Recipient Opt-In Confirmed</span>
+            </label>
+            
+            <label className="flex items-center space-x-2 text-sm cursor-pointer select-none">
+              <input type="checkbox" checked={!!f.whatsappNotificationsEnabled} onChange={e => setF({ ...f, whatsappNotificationsEnabled: e.target.checked })} className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 h-4 w-4" />
+              <span className="text-slate-700 font-medium">Receive Task Assignment / Reassignment Alerts</span>
+            </label>
+            
+            <label className="flex items-center space-x-2 text-sm cursor-pointer select-none">
+              <input type="checkbox" checked={!!f.dailyRosterEnabled} onChange={e => setF({ ...f, dailyRosterEnabled: e.target.checked })} className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 h-4 w-4" />
+              <span className="text-slate-700 font-medium">Receive Daily 9:30 AM PDF Roster</span>
+            </label>
+          </div>
+
+          <DialogFooter className="pt-2">
             <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
             <Button type="submit" disabled={saving}>{saving ? 'Saving...' : 'Save'}</Button>
           </DialogFooter>
