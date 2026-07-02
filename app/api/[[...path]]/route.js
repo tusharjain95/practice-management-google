@@ -464,6 +464,22 @@ async function handle(request, ctx) {
         me.orgs = initialOrgs;
       }
 
+      // Always ensure all existing unassociated records are associated to the user's default organization
+      if (me.orgs && me.orgs.length > 0) {
+        const defaultOrgId = me.orgs[0].orgId;
+        const unassignedFilter = { $or: [{ orgId: { $exists: false } }, { orgId: null }, { orgId: "" }] };
+        await db.collection('leads').updateMany(unassignedFilter, { $set: { orgId: defaultOrgId } });
+        await db.collection('tasks').updateMany(unassignedFilter, { $set: { orgId: defaultOrgId } });
+        await db.collection('clients').updateMany(unassignedFilter, { $set: { orgId: defaultOrgId } });
+        await db.collection('invoices').updateMany(unassignedFilter, { $set: { orgId: defaultOrgId } });
+        await db.collection('quotations').updateMany(unassignedFilter, { $set: { orgId: defaultOrgId } });
+        await db.collection('payments').updateMany(unassignedFilter, { $set: { orgId: defaultOrgId } });
+        await db.collection('settings').updateMany(unassignedFilter, { $set: { orgId: defaultOrgId } });
+        await db.collection('compliances').updateMany(unassignedFilter, { $set: { orgId: defaultOrgId } });
+        await db.collection('activity_logs').updateMany(unassignedFilter, { $set: { orgId: defaultOrgId } });
+        await db.collection('whatsapp_notifications').updateMany(unassignedFilter, { $set: { orgId: defaultOrgId } });
+      }
+
       let activeOrgId = request.headers.get('x-org-id');
       let orgMembership = me.orgs.find(o => o.orgId === activeOrgId);
       if (!orgMembership) {
@@ -575,14 +591,22 @@ async function handle(request, ctx) {
       const initialOrgs = [{ orgId: defaultOrgId, role: 'admin' }];
       await db.collection('users').updateOne({ id: me.id }, { $set: { orgs: initialOrgs } });
       me.orgs = initialOrgs;
+    }
 
-      // Migrate existing records that do not have any orgId to this defaultOrgId
-      await db.collection('leads').updateMany({ orgId: { $exists: false } }, { $set: { orgId: defaultOrgId } });
-      await db.collection('tasks').updateMany({ orgId: { $exists: false } }, { $set: { orgId: defaultOrgId } });
-      await db.collection('clients').updateMany({ orgId: { $exists: false } }, { $set: { orgId: defaultOrgId } });
-      await db.collection('invoices').updateMany({ orgId: { $exists: false } }, { $set: { orgId: defaultOrgId } });
-      await db.collection('quotations').updateMany({ orgId: { $exists: false } }, { $set: { orgId: defaultOrgId } });
-      await db.collection('payments').updateMany({ orgId: { $exists: false } }, { $set: { orgId: defaultOrgId } });
+    // Always ensure all existing unassociated records are associated to the user's default organization
+    if (me.orgs && me.orgs.length > 0) {
+      const defaultOrgId = me.orgs[0].orgId;
+      const unassignedFilter = { $or: [{ orgId: { $exists: false } }, { orgId: null }, { orgId: "" }] };
+      await db.collection('leads').updateMany(unassignedFilter, { $set: { orgId: defaultOrgId } });
+      await db.collection('tasks').updateMany(unassignedFilter, { $set: { orgId: defaultOrgId } });
+      await db.collection('clients').updateMany(unassignedFilter, { $set: { orgId: defaultOrgId } });
+      await db.collection('invoices').updateMany(unassignedFilter, { $set: { orgId: defaultOrgId } });
+      await db.collection('quotations').updateMany(unassignedFilter, { $set: { orgId: defaultOrgId } });
+      await db.collection('payments').updateMany(unassignedFilter, { $set: { orgId: defaultOrgId } });
+      await db.collection('settings').updateMany(unassignedFilter, { $set: { orgId: defaultOrgId } });
+      await db.collection('compliances').updateMany(unassignedFilter, { $set: { orgId: defaultOrgId } });
+      await db.collection('activity_logs').updateMany(unassignedFilter, { $set: { orgId: defaultOrgId } });
+      await db.collection('whatsapp_notifications').updateMany(unassignedFilter, { $set: { orgId: defaultOrgId } });
     }
 
     // Now determine the active organization ID
