@@ -173,6 +173,22 @@ async function generateQuotationPDF(q, branding = {}) {
   doc.save(`${q.quotationNumber}_${(q.clientName || 'client').replace(/\s+/g, '_')}.pdf`);
 }
 
+function SortableHeader({ label, field, currentField, currentOrder, onSort, className = '' }) {
+  const isRight = className.includes('text-right');
+  return (
+    <TableHead className={`cursor-pointer select-none hover:bg-slate-100/50 transition py-2 ${className}`} onClick={() => onSort(field)}>
+      <div className={`flex items-center gap-1 ${isRight ? 'justify-end' : ''}`}>
+        <span>{label}</span>
+        {currentField === field ? (
+          currentOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-indigo-600 shrink-0" /> : <ArrowDown className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+        ) : (
+          <ArrowUpDown className="w-3.5 h-3.5 text-slate-300 shrink-0" />
+        )}
+      </div>
+    </TableHead>
+  );
+}
+
 function App() {
   const [user, setUser] = useState(null);
   const [booting, setBooting] = useState(true);
@@ -208,7 +224,7 @@ function App() {
     return <div className="min-h-screen flex items-center justify-center bg-slate-50">Loading...</div>;
   }
   if (!user) return <Login onLogin={handleLogin} />;
-  return <Shell user={user} view={view} viewParams={viewParams} setView={setView} onLogout={logout} />;
+  return <Shell user={user} onUserUpdated={setUser} view={view} viewParams={viewParams} setView={setView} onLogout={logout} />;
 }
 
 function Login({ onLogin }) {
@@ -302,8 +318,8 @@ function Login({ onLogin }) {
   );
 }
 
-function Shell({ user, view, viewParams, setView, onLogout }) {
-  const [pwdOpen, setPwdOpen] = useState(false);
+function Shell({ user, onUserUpdated, view, viewParams, setView, onLogout }) {
+  const [profileOpen, setProfileOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const navItems = useMemo(() => {
     const all = [
@@ -389,8 +405,8 @@ function Shell({ user, view, viewParams, setView, onLogout }) {
             <div className="text-sm font-medium">{user.name}</div>
             <div className="text-xs text-slate-400 capitalize">{user.role}</div>
           </div>
-          <Button variant="outline" size="sm" className="w-full mb-2 bg-transparent border-slate-700 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { setPwdOpen(true); setSidebarOpen(false); }}>
-            <KeyRound className="w-4 h-4 mr-2" /> Change Password
+          <Button variant="outline" size="sm" className="w-full mb-2 bg-transparent border-slate-700 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { setProfileOpen(true); setSidebarOpen(false); }}>
+            <KeyRound className="w-4 h-4 mr-2" /> My Profile
           </Button>
           <Button variant="outline" size="sm" className="w-full bg-transparent border-slate-700 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={onLogout}>
             <LogOut className="w-4 h-4 mr-2" /> Logout
@@ -415,46 +431,81 @@ function Shell({ user, view, viewParams, setView, onLogout }) {
           {view === 'backup' && <BackupView user={user} />}
         </div>
       </main>
-      {pwdOpen && <ChangePasswordDialog onClose={() => setPwdOpen(false)} />}
+      {profileOpen && <MyProfileDialog user={user} onUserUpdated={onUserUpdated} onClose={() => setProfileOpen(false)} />}
     </div>
   );
 }
 
-function ChangePasswordDialog({ onClose }) {
+function MyProfileDialog({ user, onUserUpdated, onClose }) {
   const { call } = useApi();
-  const [f, setF] = useState({ currentPassword: '', newPassword: '', confirm: '' });
+  const [f, setF] = useState({
+    name: user.name || '',
+    email: user.email || '',
+    currentPassword: '',
+    newPassword: '',
+    confirm: '',
+  });
   const [saving, setSaving] = useState(false);
+
   async function submit(e) {
     e.preventDefault();
-    if (f.newPassword.length < 6) { toast.error('New password must be at least 6 characters'); return; }
-    if (f.newPassword !== f.confirm) { toast.error('Passwords do not match'); return; }
+    if (f.newPassword && f.newPassword !== f.confirm) {
+      toast.error('New passwords do not match');
+      return;
+    }
     setSaving(true);
     try {
-      await call('auth/change-password', { method: 'POST', body: { currentPassword: f.currentPassword, newPassword: f.newPassword } });
-      toast.success('Password changed successfully');
+      const res = await call('auth/profile', {
+        method: 'POST',
+        body: {
+          name: f.name,
+          email: f.email,
+          currentPassword: f.currentPassword || undefined,
+          newPassword: f.newPassword || undefined,
+        },
+      });
+      toast.success('Profile updated successfully');
+      if (res.user && res.token) {
+        localStorage.setItem('ca_token', res.token);
+        localStorage.setItem('ca_user', JSON.stringify(res.user));
+        if (onUserUpdated) onUserUpdated(res.user);
+      }
       onClose();
-    } catch (e) { toast.error(e.message); } finally { setSaving(false); }
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setSaving(false);
+    }
   }
+
   return (
     <Dialog open onOpenChange={onClose}>
-      <DialogContent>
+      <DialogContent className="max-w-md w-[95vw] max-h-[95vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Change My Password</DialogTitle>
-          <DialogDescription>Enter your current password and choose a new one (min 6 characters).</DialogDescription>
+          <DialogTitle>My Profile</DialogTitle>
+          <DialogDescription>Update your profile name, email, and password.</DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="space-y-3">
-          <Field label="Current Password *">
-            <Input type="password" value={f.currentPassword} onChange={e => setF({ ...f, currentPassword: e.target.value })} required autoFocus />
+          <Field label="Name *">
+            <Input value={f.name} onChange={e => setF({ ...f, name: e.target.value })} required />
           </Field>
-          <Field label="New Password *">
-            <Input type="password" value={f.newPassword} onChange={e => setF({ ...f, newPassword: e.target.value })} required minLength={6} />
+          <Field label="Email * (for Login & Display)">
+            <Input type="email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} required />
           </Field>
-          <Field label="Confirm New Password *">
-            <Input type="password" value={f.confirm} onChange={e => setF({ ...f, confirm: e.target.value })} required minLength={6} />
+          <Separator className="my-2" />
+          <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Change Password (Optional)</div>
+          <Field label="Current Password">
+            <Input type="password" value={f.currentPassword} onChange={e => setF({ ...f, currentPassword: e.target.value })} placeholder="Required only if changing password" />
+          </Field>
+          <Field label="New Password">
+            <Input type="password" value={f.newPassword} onChange={e => setF({ ...f, newPassword: e.target.value })} minLength={6} placeholder="Min 6 characters" />
+          </Field>
+          <Field label="Confirm New Password">
+            <Input type="password" value={f.confirm} onChange={e => setF({ ...f, confirm: e.target.value })} minLength={6} />
           </Field>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
-            <Button type="submit" disabled={saving}>{saving ? 'Updating...' : 'Update Password'}</Button>
+            <Button type="submit" disabled={saving}>{saving ? 'Saving...' : 'Save Profile'}</Button>
           </DialogFooter>
         </form>
       </DialogContent>
@@ -1969,6 +2020,39 @@ function Quotations({ user, viewParams = {} }) {
   const [branding, setBranding] = useState({});
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
+  const [sortField, setSortField] = useState('quotationNumber');
+  const [sortOrder, setSortOrder] = useState('desc');
+
+  function handleSort(field) {
+    if (sortField === field) {
+      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortOrder('asc');
+    }
+  }
+
+  const sortedItems = useMemo(() => {
+    return [...items].sort((a, b) => {
+      let valA = a[sortField];
+      let valB = b[sortField];
+      if (sortField === 'servicesCount') {
+        valA = (a.services || []).length;
+        valB = (b.services || []).length;
+      }
+      if (valA === undefined || valA === null) valA = '';
+      if (valB === undefined || valB === null) valB = '';
+      if (typeof valA === 'string') {
+        return sortOrder === 'asc'
+          ? valA.localeCompare(valB)
+          : valB.localeCompare(valA);
+      } else {
+        return sortOrder === 'asc'
+          ? (valA > valB ? 1 : -1)
+          : (valB > valA ? 1 : -1);
+      }
+    });
+  }, [items, sortField, sortOrder]);
   async function load() {
     try {
       const [d, b] = await Promise.all([call('quotations'), call('branding')]);
@@ -1998,18 +2082,18 @@ function Quotations({ user, viewParams = {} }) {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Quotation #</TableHead>
-                <TableHead>Client</TableHead>
-                <TableHead>Services</TableHead>
-                <TableHead className="text-right">Subtotal</TableHead>
-                <TableHead className="text-right">GST</TableHead>
-                <TableHead className="text-right">Total</TableHead>
-                <TableHead>Date</TableHead>
+                <SortableHeader label="Quotation #" field="quotationNumber" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} />
+                <SortableHeader label="Client" field="clientName" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} />
+                <SortableHeader label="Services" field="servicesCount" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} />
+                <SortableHeader label="Subtotal" field="subtotal" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} className="text-right" />
+                <SortableHeader label="GST" field="gstAmount" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} className="text-right" />
+                <SortableHeader label="Total" field="total" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} className="text-right" />
+                <SortableHeader label="Date" field="createdAt" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} />
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {items.map(q => (
+              {sortedItems.map(q => (
                 <TableRow key={q.id} className="hover:bg-slate-50">
                   <TableCell className="font-mono text-sm">
                     <button onClick={() => { setEditing(q); setOpen(true); }} className="text-indigo-600 hover:underline">{q.quotationNumber}</button>
@@ -2037,7 +2121,7 @@ function Quotations({ user, viewParams = {} }) {
                   </TableCell>
                 </TableRow>
               ))}
-              {!items.length && (<TableRow><TableCell colSpan={8} className="text-center text-slate-500 py-8">No quotations yet. Create one to generate a PDF.</TableCell></TableRow>)}
+              {!sortedItems.length && (<TableRow><TableCell colSpan={8} className="text-center text-slate-500 py-8">No quotations yet. Create one to generate a PDF.</TableCell></TableRow>)}
             </TableBody>
           </Table>
         </CardContent>
@@ -2196,6 +2280,36 @@ function UsersView({ user }) {
   const [editing, setEditing] = useState(null);
   const [resetUser, setResetUser] = useState(null);
   const [permUser, setPermUser] = useState(null);
+  const [sortField, setSortField] = useState('name');
+  const [sortOrder, setSortOrder] = useState('asc');
+
+  function handleSort(field) {
+    if (sortField === field) {
+      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortOrder('asc');
+    }
+  }
+
+  const sortedUsers = useMemo(() => {
+    return [...users].sort((a, b) => {
+      let valA = a[sortField];
+      let valB = b[sortField];
+      if (valA === undefined || valA === null) valA = '';
+      if (valB === undefined || valB === null) valB = '';
+      if (typeof valA === 'string') {
+        return sortOrder === 'asc'
+          ? valA.localeCompare(valB)
+          : valB.localeCompare(valA);
+      } else {
+        return sortOrder === 'asc'
+          ? (valA > valB ? 1 : -1)
+          : (valB > valA ? 1 : -1);
+      }
+    });
+  }, [users, sortField, sortOrder]);
+
   async function load() {
     try { const d = await call('users'); setUsers(d.users || []); }
     catch (e) { toast.error(e.message); }
@@ -2218,15 +2332,15 @@ function UsersView({ user }) {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Email</TableHead>
-                <TableHead>Role</TableHead>
-                <TableHead>Created</TableHead>
+                <SortableHeader label="Name" field="name" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} />
+                <SortableHeader label="Email" field="email" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} />
+                <SortableHeader label="Role" field="role" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} />
+                <SortableHeader label="Created" field="createdAt" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} />
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {users.map(u => (
+              {sortedUsers.map(u => (
                 <TableRow key={u.id}>
                   <TableCell className="font-medium">{u.name}</TableCell>
                   <TableCell>{u.email}</TableCell>
@@ -2322,6 +2436,7 @@ function UserForm({ initial, onClose, onSaved }) {
       if (initial) {
         const body = {
           name: f.name,
+          email: f.email,
           role: f.role,
           whatsappNumber: f.whatsappNumber || '',
           whatsappOptIn: !!f.whatsappOptIn,
@@ -2352,7 +2467,7 @@ function UserForm({ initial, onClose, onSaved }) {
         <DialogHeader><DialogTitle>{initial ? 'Edit Staff' : 'New Staff Member'}</DialogTitle></DialogHeader>
         <form onSubmit={submit} className="space-y-3">
           <Field label="Full Name *"><Input value={f.name} onChange={e => setF({ ...f, name: e.target.value })} required /></Field>
-          <Field label="Email *"><Input type="email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} required disabled={!!initial} /></Field>
+          <Field label="Email *"><Input type="email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} required /></Field>
           <Field label="Role">
             <Select value={f.role} onValueChange={v => setF({ ...f, role: v })}>
               <SelectTrigger><SelectValue /></SelectTrigger>
@@ -2551,9 +2666,36 @@ function ClientsView({ user, setView, viewParams = {} }) {
   }
   useEffect(() => { load(); }, []);
 
-  const filtered = useMemo(() =>
-    clients.filter(c => !q || `${c.name} ${c.company} ${c.phone} ${c.email} ${c.gstin}`.toLowerCase().includes(q.toLowerCase()))
-  , [clients, q]);
+  const [sortField, setSortField] = useState('name');
+  const [sortOrder, setSortOrder] = useState('asc');
+
+  function handleSort(field) {
+    if (sortField === field) {
+      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortOrder('asc');
+    }
+  }
+
+  const filtered = useMemo(() => {
+    const res = clients.filter(c => !q || `${c.name} ${c.company} ${c.phone} ${c.email} ${c.gstin}`.toLowerCase().includes(q.toLowerCase()));
+    return res.sort((a, b) => {
+      let valA = a[sortField];
+      let valB = b[sortField];
+      if (valA === undefined || valA === null) valA = '';
+      if (valB === undefined || valB === null) valB = '';
+      if (typeof valA === 'string') {
+        return sortOrder === 'asc'
+          ? valA.localeCompare(valB)
+          : valB.localeCompare(valA);
+      } else {
+        return sortOrder === 'asc'
+          ? (valA > valB ? 1 : -1)
+          : (valB > valA ? 1 : -1);
+      }
+    });
+  }, [clients, q, sortField, sortOrder]);
 
   async function del(id) {
     if (!confirm('Delete this client? Invoices/payments will remain.')) return;
@@ -2597,13 +2739,13 @@ function ClientsView({ user, setView, viewParams = {} }) {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Contact</TableHead>
-                <TableHead>GSTIN</TableHead>
-                <TableHead className="text-right">Opening</TableHead>
-                <TableHead className="text-right">Billed</TableHead>
-                <TableHead className="text-right">Received</TableHead>
-                <TableHead className="text-right">Net Due</TableHead>
+                <SortableHeader label="Name" field="name" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} />
+                <SortableHeader label="Contact" field="email" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} />
+                <SortableHeader label="GSTIN" field="gstin" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} />
+                <SortableHeader label="Opening" field="openingBalance" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} className="text-right" />
+                <SortableHeader label="Billed" field="billed" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} className="text-right" />
+                <SortableHeader label="Received" field="received" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} className="text-right" />
+                <SortableHeader label="Net Due" field="netDue" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} className="text-right" />
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
@@ -2969,10 +3111,39 @@ function InvoicesView({ user, viewParams = {}, setView }) {
   useEffect(() => { load(); }, []);
   useEffect(() => { if (viewParams.status) setStatusFilter(viewParams.status); }, [viewParams.status]);
 
-  const filtered = useMemo(() => invoices.filter(i =>
-    (statusFilter === 'all' || i.status === statusFilter) &&
-    (!q || `${i.invoiceNumber} ${i.clientName} ${i.companyName}`.toLowerCase().includes(q.toLowerCase()))
-  ), [invoices, q, statusFilter]);
+  const [sortField, setSortField] = useState('invoiceNumber');
+  const [sortOrder, setSortOrder] = useState('desc');
+
+  function handleSort(field) {
+    if (sortField === field) {
+      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortOrder('asc');
+    }
+  }
+
+  const filtered = useMemo(() => {
+    const res = invoices.filter(i =>
+      (statusFilter === 'all' || i.status === statusFilter) &&
+      (!q || `${i.invoiceNumber} ${i.clientName} ${i.companyName}`.toLowerCase().includes(q.toLowerCase()))
+    );
+    return res.sort((a, b) => {
+      let valA = a[sortField];
+      let valB = b[sortField];
+      if (valA === undefined || valA === null) valA = '';
+      if (valB === undefined || valB === null) valB = '';
+      if (typeof valA === 'string') {
+        return sortOrder === 'asc'
+          ? valA.localeCompare(valB)
+          : valB.localeCompare(valA);
+      } else {
+        return sortOrder === 'asc'
+          ? (valA > valB ? 1 : -1)
+          : (valB > valA ? 1 : -1);
+      }
+    });
+  }, [invoices, q, statusFilter, sortField, sortOrder]);
 
   async function del(id) {
     if (!confirm('Delete invoice?')) return;
@@ -3022,13 +3193,13 @@ function InvoicesView({ user, viewParams = {}, setView }) {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Invoice #</TableHead>
-                <TableHead>Client</TableHead>
-                <TableHead>Due Date</TableHead>
-                <TableHead className="text-right">Total</TableHead>
-                <TableHead className="text-right">Paid</TableHead>
-                <TableHead className="text-right">Due</TableHead>
-                <TableHead>Status</TableHead>
+                <SortableHeader label="Invoice #" field="invoiceNumber" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} />
+                <SortableHeader label="Client" field="clientName" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} />
+                <SortableHeader label="Due Date" field="dueDate" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} />
+                <SortableHeader label="Total" field="total" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} className="text-right" />
+                <SortableHeader label="Paid" field="paidAmount" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} className="text-right" />
+                <SortableHeader label="Due" field="dueAmount" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} className="text-right" />
+                <SortableHeader label="Status" field="status" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} />
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
@@ -3255,6 +3426,36 @@ function BrandingView({ user }) {
 function ReceivablesView({ user, setView }) {
   const { call } = useApi();
   const [data, setData] = useState(null);
+  const [sortField, setSortField] = useState('total');
+  const [sortOrder, setSortOrder] = useState('desc');
+
+  function handleSort(field) {
+    if (sortField === field) {
+      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortOrder('asc');
+    }
+  }
+
+  const sortedClients = useMemo(() => {
+    if (!data || !data.perClient) return [];
+    return [...data.perClient].sort((a, b) => {
+      let valA = a[sortField];
+      let valB = b[sortField];
+      if (valA === undefined || valA === null) valA = '';
+      if (valB === undefined || valB === null) valB = '';
+      if (typeof valA === 'string') {
+        return sortOrder === 'asc'
+          ? valA.localeCompare(valB)
+          : valB.localeCompare(valA);
+      } else {
+        return sortOrder === 'asc'
+          ? (valA > valB ? 1 : -1)
+          : (valB > valA ? 1 : -1);
+      }
+    });
+  }, [data, sortField, sortOrder]);
 
   async function load() {
     try { setData(await call('reports/aging')); }
@@ -3360,18 +3561,18 @@ function ReceivablesView({ user, setView }) {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Client</TableHead>
-                    <TableHead className="text-right">Current</TableHead>
-                    <TableHead className="text-right">1-30 d</TableHead>
-                    <TableHead className="text-right">31-60 d</TableHead>
-                    <TableHead className="text-right">61-90 d</TableHead>
-                    <TableHead className="text-right">90+ d</TableHead>
-                    <TableHead className="text-right font-bold">Total Due</TableHead>
-                    <TableHead>Oldest</TableHead>
+                    <SortableHeader label="Client" field="clientName" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} />
+                    <SortableHeader label="Current" field="current" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} className="text-right" />
+                    <SortableHeader label="1-30 d" field="b30" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} className="text-right" />
+                    <SortableHeader label="31-60 d" field="b60" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} className="text-right" />
+                    <SortableHeader label="61-90 d" field="b90" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} className="text-right" />
+                    <SortableHeader label="90+ d" field="b90plus" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} className="text-right" />
+                    <SortableHeader label="Total Due" field="total" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} className="text-right font-bold" />
+                    <SortableHeader label="Oldest" field="oldestInvoiceDate" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} />
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {data.perClient.map(r => (
+                  {sortedClients.map(r => (
                     <TableRow key={r.clientId} className="hover:bg-slate-50 cursor-pointer" onClick={() => r.clientId && !r.clientId.startsWith('_orphan_') && setView('clients', { openId: r.clientId })}>
                       <TableCell>
                         <div className="font-medium text-indigo-600 hover:underline">{r.clientName}</div>
@@ -3520,6 +3721,35 @@ function CompliancesView({ user }) {
   const [editing, setEditing] = useState(null);
   const [expanded, setExpanded] = useState(null);
   const [assignOpen, setAssignOpen] = useState(null);
+  const [sortField, setSortField] = useState('name');
+  const [sortOrder, setSortOrder] = useState('asc');
+
+  function handleSort(field) {
+    if (sortField === field) {
+      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortOrder('asc');
+    }
+  }
+
+  const sortedItems = useMemo(() => {
+    return [...items].sort((a, b) => {
+      let valA = a[sortField];
+      let valB = b[sortField];
+      if (valA === undefined || valA === null) valA = '';
+      if (valB === undefined || valB === null) valB = '';
+      if (typeof valA === 'string') {
+        return sortOrder === 'asc'
+          ? valA.localeCompare(valB)
+          : valB.localeCompare(valA);
+      } else {
+        return sortOrder === 'asc'
+          ? (valA > valB ? 1 : -1)
+          : (valB > valA ? 1 : -1);
+      }
+    });
+  }, [items, sortField, sortOrder]);
 
   async function load() {
     try {
@@ -3548,14 +3778,14 @@ function CompliancesView({ user }) {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Compliance</TableHead>
-                <TableHead>Frequency</TableHead>
-                <TableHead className="text-right">Applicable Clients</TableHead>
+                <SortableHeader label="Compliance" field="name" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} />
+                <SortableHeader label="Frequency" field="frequency" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} />
+                <SortableHeader label="Applicable Clients" field="clientCount" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} className="text-right" />
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {items.map(c => (
+              {sortedItems.map(c => (
                 <>
                   <TableRow key={c.id} className="hover:bg-slate-50 cursor-pointer" onClick={() => setExpanded(expanded === c.id ? null : c.id)}>
                     <TableCell>
@@ -3579,7 +3809,7 @@ function CompliancesView({ user }) {
                           <div className="text-sm text-slate-500 py-2">No clients have been marked applicable. Click 📋 icon above to assign clients.</div>
                         ) : (
                           <div className="py-2">
-                            <div className="text-sm font-semibold mb-2">Clients applicable for {c.name}:</div>
+                             <div className="text-sm font-semibold mb-2">Clients applicable for {c.name}:</div>
                             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
                               {c.applicableClients.map(cl => (
                                 <div key={cl.id} className="bg-white border rounded p-2 text-sm">
@@ -3601,7 +3831,7 @@ function CompliancesView({ user }) {
                   )}
                 </>
               ))}
-              {!items.length && <TableRow><TableCell colSpan={4} className="text-center text-slate-500 py-8">No compliances yet. Add one (e.g., &quot;GSTR-3B Monthly&quot;, &quot;Annual Audit&quot;) to start tracking.</TableCell></TableRow>}
+              {!sortedItems.length && <TableRow><TableCell colSpan={4} className="text-center text-slate-500 py-8">No compliances yet. Add one (e.g., &quot;GSTR-3B Monthly&quot;, &quot;Annual Audit&quot;) to start tracking.</TableCell></TableRow>}
             </TableBody>
           </Table>
         </CardContent>

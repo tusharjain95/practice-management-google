@@ -464,6 +464,56 @@ async function handle(request, ctx) {
       return json({ ok: true });
     }
 
+    // Update own profile (including email, name, password)
+    if (route === 'auth/profile' && method === 'POST') {
+      const u = verifyAuth(request);
+      if (!u) return json({ error: 'Unauthorized' }, 401);
+      const { email, name, currentPassword, newPassword } = await request.json();
+      const user = await db.collection('users').findOne({ id: u.id });
+      if (!user) return json({ error: 'User not found' }, 404);
+
+      let updatedEmail = user.email;
+      if (email && email.toLowerCase().trim() !== user.email) {
+        const cleanEmail = email.toLowerCase().trim();
+        const exists = await db.collection('users').findOne({ email: cleanEmail, id: { $ne: u.id } });
+        if (exists) return json({ error: 'Email already exists' }, 400);
+        updatedEmail = cleanEmail;
+      }
+
+      const update = {
+        name: name || user.name,
+        email: updatedEmail,
+        updatedAt: new Date().toISOString()
+      };
+
+      if (newPassword) {
+        if (!currentPassword) {
+          return json({ error: 'Current password is required to set a new password' }, 400);
+        }
+        const ok = await bcrypt.compare(currentPassword, user.passwordHash);
+        if (!ok) return json({ error: 'Current password is incorrect' }, 401);
+        if (newPassword.length < 6) {
+          return json({ error: 'New password must be at least 6 characters' }, 400);
+        }
+        update.passwordHash = await bcrypt.hash(newPassword, 10);
+      }
+
+      await db.collection('users').updateOne({ id: u.id }, { $set: update });
+
+      const updatedUser = {
+        id: user.id,
+        email: updatedEmail,
+        name: update.name,
+        role: user.role,
+        permissions: user.permissions || {}
+      };
+      const token = jwt.sign(updatedUser, JWT_SECRET, { expiresIn: '7d' });
+
+      logActivity(db, u, 'update_profile', 'user', u.id, { name: update.name, email: updatedEmail });
+
+      return json({ ok: true, user: updatedUser, token });
+    }
+
     // From here on, auth required
     const me = verifyAuth(request);
     if (!me) return json({ error: 'Unauthorized' }, 401);
@@ -503,6 +553,12 @@ async function handle(request, ctx) {
       const body = await request.json();
       const update = {};
       if (body.name) update.name = body.name;
+      if (body.email) {
+        const cleanEmail = body.email.toLowerCase().trim();
+        const exists = await db.collection('users').findOne({ email: cleanEmail, id: { $ne: id } });
+        if (exists) return json({ error: 'Email already exists' }, 400);
+        update.email = cleanEmail;
+      }
       if (body.role) update.role = body.role;
       if (typeof body.active === 'boolean') update.active = body.active;
       if (body.password) update.passwordHash = await bcrypt.hash(body.password, 10);

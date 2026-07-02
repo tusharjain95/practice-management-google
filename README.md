@@ -19,8 +19,8 @@ CA Practice Manager replaces the spreadsheets, WhatsApp groups, and manual filin
   - **Admin** — full access, can manage staff, branding, deletes
   - **Manager** — can manage leads, tasks, clients, invoices, payments
   - **Staff** — sees only their own assigned tasks and leads
-- Self-service password change for every user
-- Admin-driven password reset with random password generator
+- **Self-service Profile & Email Management** — users can update their profile name, email address, and password under **My Profile** with automatic session JWT token regeneration
+- Admin-driven staff email updates and password reset with random password generator
 
 ### 🎯 Lead Management
 - Full CRUD with status pipeline (New → In Progress → Converted / Cancelled)
@@ -45,6 +45,7 @@ CA Practice Manager replaces the spreadsheets, WhatsApp groups, and manual filin
 - **Opening balance with "as on" date** (mandatory) — essential for accurate carry-forward and aging
 - Per-client computed dashboard: Billed, Received, Net Due, Invoice Count
 - Linkable to leads (when converting)
+- **Interactive Sorting** — sort by Name, Company, GSTIN, Opening Balance, Billed, Received, or Net Due
 
 ### 🧾 Invoice Generation
 - Auto-numbered invoices in `INV-YYYY-NNNN` format
@@ -53,6 +54,7 @@ CA Practice Manager replaces the spreadsheets, WhatsApp groups, and manual filin
 - Auto-calculated subtotal, tax, total
 - **Branded PDF** with your logo, firm details, bank/UPI info, and footer text
 - Status auto-managed: Unpaid → Partial → Paid
+- **Interactive Sorting** — sort by Invoice #, Client Name, Due Date, Total, Paid, Due Amount, or Status
 
 ### 💰 Payment Tracking
 - Record payments by mode: Cash / Bank / UPI / Cheque / Card / NEFT-RTGS
@@ -66,6 +68,7 @@ CA Practice Manager replaces the spreadsheets, WhatsApp groups, and manual filin
 - 🍩 Donut chart of aging distribution
 - 📊 Stacked bar chart of top 10 outstanding clients
 - 📋 Full client-wise table with bucket breakdown
+- **Interactive Sorting** — sort client-wise aging table by Client, Current, 1-30d, 31-60d, 61-90d, 90+d, or Total Due
 - 📤 Excel export with all buckets and aging metadata
 - Smart bucketing: opening balance is aged from its "as on" date; each invoice is aged from its due date
 
@@ -76,6 +79,7 @@ CA Practice Manager replaces the spreadsheets, WhatsApp groups, and manual filin
 - Validity date + custom terms
 - Custom firm branding (logo, address, GSTIN, contact)
 - Instant download on save
+- **Interactive Sorting** — sort by Quotation #, Client, Services, Subtotal, GST, Total, or Date
 
 ### 🎨 Custom Branding
 - Upload firm logo (PNG/JPG)
@@ -83,6 +87,12 @@ CA Practice Manager replaces the spreadsheets, WhatsApp groups, and manual filin
 - Bank account, IFSC, UPI ID — auto-embedded in invoice PDFs
 - Custom PDF footer text
 - Applied automatically to all quotation and invoice PDFs
+
+### 📋 Compliance Management
+- Full CRUD for Compliance Categories (e.g. GST, Income Tax, Audits) with customizable frequencies (Monthly, Quarterly, Annually, Custom)
+- **Applicable Clients Mapping** — associate multiple clients to each compliance type with a simple multi-selection interface
+- **Interactive Sorting** — sort compliances by Compliance Name, Frequency, or number of Applicable Clients
+- **One-click Exporting** — export the full list of applicable clients for any compliance category as an Excel file
 
 ### 📅 Calendar View
 - Monthly grid showing tasks (blue) and lead follow-ups (amber)
