@@ -411,6 +411,48 @@ function Shell({ user, onUserUpdated, view, viewParams, setView, onLogout }) {
   const [editOrgName, setEditOrgName] = useState('');
   const [editingOrg, setEditingOrg] = useState(false);
 
+  const [deferredPrompt, setDeferredPrompt] = useState(null);
+  const [installHelpOpen, setInstallHelpOpen] = useState(false);
+  const [isAppInstalled, setIsAppInstalled] = useState(false);
+
+  useEffect(() => {
+    const handleBeforeInstallPrompt = (e) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+    };
+
+    const handleAppInstalled = () => {
+      setDeferredPrompt(null);
+      setIsAppInstalled(true);
+      toast.success('App installed successfully!');
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    window.addEventListener('appinstalled', handleAppInstalled);
+
+    if (window.matchMedia('(display-mode: standalone)').matches) {
+      setIsAppInstalled(true);
+    }
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      window.removeEventListener('appinstalled', handleAppInstalled);
+    };
+  }, []);
+
+  async function handleInstallApp() {
+    if (!deferredPrompt) {
+      setInstallHelpOpen(true);
+      return;
+    }
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    if (outcome === 'accepted') {
+      toast.success('Thank you for installing the app!');
+    }
+    setDeferredPrompt(null);
+  }
+
   async function loadOrganisations() {
     try {
       const data = await call('organisations');
@@ -617,6 +659,17 @@ function Shell({ user, onUserUpdated, view, viewParams, setView, onLogout }) {
           ))}
         </nav>
         <div className="p-3 border-t border-slate-800">
+          {!isAppInstalled && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full mb-2 bg-indigo-950/40 border-indigo-800/80 text-indigo-300 hover:bg-indigo-900/60 hover:text-indigo-100 flex items-center justify-center gap-2 cursor-pointer"
+              onClick={handleInstallApp}
+              title="Install this app on your phone as a full-screen Web App"
+            >
+              <DownloadCloud className="w-4 h-4 text-indigo-400 animate-pulse" /> Install Web App
+            </Button>
+          )}
           <div className="px-3 py-2 mb-2">
             <div className="text-sm font-medium">{user.name}</div>
             <div className="text-xs text-slate-400 capitalize">{user.role}</div>
@@ -713,6 +766,54 @@ function Shell({ user, onUserUpdated, view, viewParams, setView, onLogout }) {
                 </Button>
               </DialogFooter>
             </form>
+          </DialogContent>
+        </Dialog>
+      )}
+      {installHelpOpen && (
+        <Dialog open={installHelpOpen} onOpenChange={setInstallHelpOpen}>
+          <DialogContent className="max-w-md w-[95vw] p-4 sm:p-6 bg-slate-900 border-slate-800 text-slate-100">
+            <DialogHeader>
+              <DialogTitle className="text-xl font-bold flex items-center gap-2 text-indigo-400">
+                <DownloadCloud className="w-5 h-5 text-indigo-400" /> Install on Google Chrome
+              </DialogTitle>
+              <DialogDescription className="text-slate-400 text-xs sm:text-sm">
+                Follow these simple steps to install the CA Practice Manager as a fast, light webapp on your Android device:
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-3 text-sm text-slate-300">
+              <div className="flex gap-3 items-start">
+                <div className="bg-slate-800 border border-slate-700 text-indigo-400 w-6 h-6 rounded-full flex items-center justify-center shrink-0 font-bold text-xs mt-0.5">
+                  1
+                </div>
+                <div>
+                  <p className="font-semibold text-slate-200">Open in Chrome</p>
+                  <p className="text-xs text-slate-400">Ensure you are currently browsing this page using Google Chrome on your Android phone.</p>
+                </div>
+              </div>
+              <div className="flex gap-3 items-start">
+                <div className="bg-slate-800 border border-slate-700 text-indigo-400 w-6 h-6 rounded-full flex items-center justify-center shrink-0 font-bold text-xs mt-0.5">
+                  2
+                </div>
+                <div>
+                  <p className="font-semibold text-slate-200">Tap the Menu</p>
+                  <p className="text-xs text-slate-400">Tap the three vertical dots menu (⋮) in Chrome's top-right corner.</p>
+                </div>
+              </div>
+              <div className="flex gap-3 items-start">
+                <div className="bg-slate-800 border border-slate-700 text-indigo-400 w-6 h-6 rounded-full flex items-center justify-center shrink-0 font-bold text-xs mt-0.5">
+                  3
+                </div>
+                <div>
+                  <p className="font-semibold text-slate-200">Select "Install app"</p>
+                  <p className="text-xs text-slate-400">Choose <span className="font-bold text-slate-200">"Install app"</span> or <span className="font-bold text-slate-200">"Add to Home screen"</span> from the options menu.</p>
+                </div>
+              </div>
+            </div>
+            <DialogFooter className="pt-2 sm:pt-4 border-t border-slate-800">
+              <Button type="button" className="w-full sm:w-auto bg-indigo-600 hover:bg-indigo-500 text-white cursor-pointer" onClick={() => setInstallHelpOpen(false)}>
+                Got it
+              </Button>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       )}

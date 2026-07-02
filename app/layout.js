@@ -49,17 +49,14 @@ export default function RootLayout({ children }) {
           dangerouslySetInnerHTML={{
             __html: `
               if ('serviceWorker' in navigator) {
-                navigator.serviceWorker.getRegistrations().then(function(registrations) {
-                  for (var registration of registrations) {
-                    registration.unregister();
-                  }
-                });
-              }
-              if ('caches' in window) {
-                caches.keys().then(function(keys) {
-                  for (var key of keys) {
-                    caches.delete(key);
-                  }
+                window.addEventListener('load', function() {
+                  navigator.serviceWorker.register('/sw.js')
+                    .then(function(reg) {
+                      console.log('ServiceWorker registration successful with scope: ', reg.scope);
+                    })
+                    .catch(function(err) {
+                      console.log('ServiceWorker registration failed: ', err);
+                    });
                 });
               }
             `,
