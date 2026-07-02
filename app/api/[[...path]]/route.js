@@ -627,12 +627,18 @@ async function handle(request, ctx) {
         if (me.role !== 'admin') {
           return json({ error: 'Forbidden' }, 403);
         }
-        const allOrgs = await db.collection('organisations').find({}).toArray();
+        const allOrgs = await db.collection('organisations').find({
+          id: { $exists: true, $ne: null, $ne: "" },
+          name: { $exists: true, $ne: null, $ne: "" }
+        }).toArray();
         return json({ organisations: allOrgs });
       }
 
       const orgIds = me.orgs.map(o => o.orgId);
-      const orgs = await db.collection('organisations').find({ id: { $in: orgIds } }).toArray();
+      const orgs = await db.collection('organisations').find({
+        id: { $in: orgIds, $exists: true, $ne: null, $ne: "" },
+        name: { $exists: true, $ne: null, $ne: "" }
+      }).toArray();
       // Attach the user's role in each org
       const list = orgs.map(o => {
         const mem = me.orgs.find(x => x.orgId === o.id);
@@ -676,6 +682,34 @@ async function handle(request, ctx) {
 
       await db.collection('organisations').updateOne({ id }, { $set: { name: body.name.trim() } });
       logActivity(db, me, 'update', 'organisation', id, { name: body.name.trim() });
+      return json({ ok: true });
+    }
+
+    if (route.startsWith('organisations/') && method === 'DELETE') {
+      const id = route.split('/')[1];
+      if (me.role !== 'admin') {
+        return json({ error: 'Forbidden' }, 403);
+      }
+      if (me.activeOrgId === id) {
+        return json({ error: 'Cannot delete your active organization. Please switch to another organization first.' }, 400);
+      }
+
+      await db.collection('organisations').deleteOne({ id });
+      await db.collection('users').updateMany(
+        { "orgs.orgId": id },
+        { $pull: { orgs: { orgId: id } } }
+      );
+      await db.collection('leads').deleteMany({ orgId: id });
+      await db.collection('tasks').deleteMany({ orgId: id });
+      await db.collection('clients').deleteMany({ orgId: id });
+      await db.collection('invoices').deleteMany({ orgId: id });
+      await db.collection('quotations').deleteMany({ orgId: id });
+      await db.collection('payments').deleteMany({ orgId: id });
+      await db.collection('settings').deleteMany({ orgId: id });
+      await db.collection('whatsapp_notifications').deleteMany({ orgId: id });
+      await db.collection('activity_logs').deleteMany({ orgId: id });
+
+      logActivity(db, me, 'delete', 'organisation', id, { id });
       return json({ ok: true });
     }
 

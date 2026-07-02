@@ -505,6 +505,7 @@ function Shell({ user, onUserUpdated, view, viewParams, setView, onLogout }) {
     }
     all.push({ key: 'quotations', label: 'Quotations', icon: FileText, perm: 'quotations' });
     if (user.role === 'admin') {
+      all.push({ key: 'organisations', label: 'Organizations', icon: Building2, perm: 'organisations' });
       all.push({ key: 'compliances', label: 'Compliances', icon: ClipboardCheck, perm: 'compliances' });
       all.push({ key: 'users', label: 'Staff', icon: Users, perm: 'users' });
       all.push({ key: 'branding', label: 'Branding', icon: Palette, perm: 'branding' });
@@ -643,6 +644,7 @@ function Shell({ user, onUserUpdated, view, viewParams, setView, onLogout }) {
           {view === 'users' && <UsersView user={user} />}
           {view === 'branding' && <BrandingView user={user} />}
           {view === 'compliances' && <CompliancesView user={user} />}
+          {view === 'organisations' && <OrganisationsAdminView user={user} />}
           {view === 'backup' && <BackupView user={user} />}
         </div>
       </main>
@@ -2756,7 +2758,7 @@ function UsersView({ user }) {
           </Table>
         </CardContent>
       </Card>
-      {open && <UserForm initial={editing} onClose={() => setOpen(false)} onSaved={() => { setOpen(false); load(); }} />}
+      {open && <UserForm user={user} initial={editing} onClose={() => setOpen(false)} onSaved={() => { setOpen(false); load(); }} />}
       {resetUser && <AdminResetPasswordDialog target={resetUser} onClose={() => setResetUser(null)} />}
       {permUser && <PermissionsDialog target={permUser} onClose={() => { setPermUser(null); load(); }} />}
       {orgAccessUser && <OrgAccessDialog target={orgAccessUser} onClose={() => { setOrgAccessUser(null); load(); }} />}
@@ -2821,12 +2823,42 @@ function AdminResetPasswordDialog({ target, onClose }) {
   );
 }
 
-function UserForm({ initial, onClose, onSaved }) {
+function UserForm({ user, initial, onClose, onSaved }) {
   const { call } = useApi();
   const [f, setF] = useState(initial || { name: '', email: '', role: 'staff', password: '', whatsappNumber: '', whatsappOptIn: false, whatsappNotificationsEnabled: false, dailyRosterEnabled: false });
   const [saving, setSaving] = useState(false);
+  const [orgsList, setOrgsList] = useState([]);
+  const [loadingOrgs, setLoadingOrgs] = useState(true);
+  const [selectedOrgIds, setSelectedOrgIds] = useState(() => {
+    if (initial && initial.orgs) {
+      return initial.orgs.map(o => o.orgId);
+    }
+    return user ? [user.activeOrgId] : [];
+  });
+
+  useEffect(() => {
+    async function fetchOrgs() {
+      try {
+        const data = await call('organisations?all=true');
+        if (data.organisations) {
+          setOrgsList(data.organisations);
+        }
+      } catch (e) {
+        console.error('Failed to load organisations in UserForm:', e);
+      } finally {
+        setLoadingOrgs(false);
+      }
+    }
+    fetchOrgs();
+  }, []);
+
   async function submit(e) {
-    e.preventDefault(); setSaving(true);
+    e.preventDefault();
+    if (selectedOrgIds.length === 0) {
+      toast.error('Please select at least one organization');
+      return;
+    }
+    setSaving(true);
     try {
       if (initial) {
         const body = {
@@ -2836,7 +2868,8 @@ function UserForm({ initial, onClose, onSaved }) {
           whatsappNumber: f.whatsappNumber || '',
           whatsappOptIn: !!f.whatsappOptIn,
           whatsappNotificationsEnabled: !!f.whatsappNotificationsEnabled,
-          dailyRosterEnabled: !!f.dailyRosterEnabled
+          dailyRosterEnabled: !!f.dailyRosterEnabled,
+          allowedOrgIds: selectedOrgIds
         };
         if (f.password) body.password = f.password;
         await call(`users/${initial.id}`, { method: 'PUT', body });
@@ -2848,7 +2881,8 @@ function UserForm({ initial, onClose, onSaved }) {
           whatsappNumber: f.whatsappNumber || '',
           whatsappOptIn: !!f.whatsappOptIn,
           whatsappNotificationsEnabled: !!f.whatsappNotificationsEnabled,
-          dailyRosterEnabled: !!f.dailyRosterEnabled
+          dailyRosterEnabled: !!f.dailyRosterEnabled,
+          allowedOrgIds: selectedOrgIds
         };
         await call('users', { method: 'POST', body });
         toast.success('User created');
@@ -2858,9 +2892,9 @@ function UserForm({ initial, onClose, onSaved }) {
   }
   return (
     <Dialog open onOpenChange={onClose}>
-      <DialogContent>
+      <DialogContent className="max-w-md w-[95vw] max-h-[90vh] overflow-y-auto p-4 sm:p-6">
         <DialogHeader><DialogTitle>{initial ? 'Edit Staff' : 'New Staff Member'}</DialogTitle></DialogHeader>
-        <form onSubmit={submit} className="space-y-3">
+        <form onSubmit={submit} className="space-y-4">
           <Field label="Full Name *"><Input value={f.name} onChange={e => setF({ ...f, name: e.target.value })} required /></Field>
           <Field label="Email *"><Input type="email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} required /></Field>
           <Field label="Role">
@@ -2876,6 +2910,44 @@ function UserForm({ initial, onClose, onSaved }) {
           <Field label="WhatsApp Number (e.g. 919876543210)">
             <Input type="text" placeholder="e.g. 919876543210" value={f.whatsappNumber || ''} onChange={e => setF({ ...f, whatsappNumber: e.target.value })} />
           </Field>
+
+          <div className="space-y-2 pt-2 border-t border-slate-100">
+            <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Organization Access *</div>
+            {loadingOrgs ? (
+              <div className="text-xs text-slate-400">Loading organizations...</div>
+            ) : orgsList.length === 0 ? (
+              <div className="text-xs text-red-500">No organizations found.</div>
+            ) : (
+              <div className="grid grid-cols-1 gap-1.5 max-h-32 overflow-y-auto border border-slate-200 rounded-md p-2.5 bg-slate-50">
+                {orgsList.map(org => {
+                  const checked = selectedOrgIds.includes(org.id);
+                  return (
+                    <label key={org.id} className="flex items-center space-x-2 text-xs cursor-pointer py-1 px-1.5 rounded hover:bg-slate-200 select-none">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => {
+                          if (checked) {
+                            if (selectedOrgIds.length > 1) {
+                              setSelectedOrgIds(selectedOrgIds.filter(id => id !== org.id));
+                            } else {
+                              toast.error('At least one organization must be selected');
+                            }
+                          } else {
+                            setSelectedOrgIds([...selectedOrgIds, org.id]);
+                          }
+                        }}
+                        className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-3.5 w-3.5"
+                      />
+                      <span className="text-slate-700 font-medium truncate" title={org.name}>
+                        {org.name}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+          </div>
 
           <div className="space-y-2 pt-2 border-t border-slate-100">
             <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">WhatsApp Configuration</div>
@@ -5313,6 +5385,199 @@ function BackupView({ user }) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+function OrganisationsAdminView({ user }) {
+  const { call } = useApi();
+  const [organisations, setOrganisations] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [orgName, setOrgName] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  async function load() {
+    setLoading(true);
+    try {
+      const data = await call('organisations?all=true');
+      if (data.organisations) {
+        setOrganisations(data.organisations);
+      }
+    } catch (e) {
+      toast.error(e.message || 'Failed to load organizations');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  async function handleSave(e) {
+    e.preventDefault();
+    if (!orgName.trim()) return;
+    setSaving(true);
+    try {
+      if (editing) {
+        await call(`organisations/${editing.id}`, {
+          method: 'PUT',
+          body: { name: orgName.trim() }
+        });
+        toast.success('Organization updated successfully');
+      } else {
+        await call('organisations', {
+          method: 'POST',
+          body: { name: orgName.trim() }
+        });
+        toast.success('Organization created successfully');
+      }
+      setOpen(false);
+      setEditing(null);
+      setOrgName('');
+      load();
+    } catch (e) {
+      toast.error(e.message || 'Failed to save organization');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDelete(id, name) {
+    if (user.activeOrgId === id) {
+      toast.error('Cannot delete your active organization. Please switch to another organization first.');
+      return;
+    }
+    if (!confirm(`Are you sure you want to delete the organization "${name}"? This will permanently delete all leads, tasks, clients, invoices, and payments associated with it and revoke access for all members!`)) {
+      return;
+    }
+    try {
+      await call(`organisations/${id}`, { method: 'DELETE' });
+      toast.success('Organization and all its data deleted successfully');
+      load();
+    } catch (e) {
+      toast.error(e.message || 'Failed to delete organization');
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <PageHeader
+        title="Organizations Management"
+        subtitle="View, create, rename, or delete all organizations across the entire system"
+        action={
+          <Button onClick={() => { setEditing(null); setOrgName(''); setOpen(true); }}>
+            <Plus className="w-4 h-4 mr-2" />New Organization
+          </Button>
+        }
+      />
+
+      <Card>
+        <CardContent className="pt-4">
+          {loading ? (
+            <div className="py-8 text-center text-slate-500 text-sm">Loading organizations...</div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Organization Name</TableHead>
+                  <TableHead>ID</TableHead>
+                  <TableHead>Created Date</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {organisations.map(org => (
+                  <TableRow key={org.id} className="hover:bg-slate-50">
+                    <TableCell className="font-medium text-slate-900">
+                      <div className="flex items-center gap-2">
+                        <span>{org.name}</span>
+                        {user.activeOrgId === org.id && (
+                          <Badge variant="outline" className="bg-indigo-50 text-indigo-700 border-indigo-200">
+                            Active
+                          </Badge>
+                        )}
+                      </div>
+                    </TableCell>
+                    <TableCell className="font-mono text-xs text-slate-500">{org.id}</TableCell>
+                    <TableCell className="text-xs text-slate-500">
+                      {org.createdAt ? new Date(org.createdAt).toLocaleDateString() : 'N/A'}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          setEditing(org);
+                          setOrgName(org.name);
+                          setOpen(true);
+                        }}
+                        title="Rename Organization"
+                      >
+                        <Edit className="w-4 h-4 text-slate-600" />
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => handleDelete(org.id, org.name)}
+                        title="Delete Organization"
+                        disabled={user.activeOrgId === org.id}
+                        className={user.activeOrgId === org.id ? 'opacity-40 cursor-not-allowed' : ''}
+                      >
+                        <Trash2 className="w-4 h-4 text-red-500" />
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+                {organisations.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={4} className="text-center text-slate-500 py-8">
+                      No organizations found.
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+
+      {open && (
+        <Dialog open onOpenChange={() => { if (!saving) { setOpen(false); setEditing(null); } }}>
+          <DialogContent className="max-w-md w-[95vw] max-h-[90vh] overflow-y-auto p-4 sm:p-6">
+            <DialogHeader>
+              <DialogTitle>{editing ? 'Rename Organization' : 'Create New Organization'}</DialogTitle>
+              <DialogDescription>
+                {editing ? 'Change the name of the organization.' : 'Add a new organization to the practice management system.'}
+              </DialogDescription>
+            </DialogHeader>
+            <form onSubmit={handleSave}>
+              <div className="space-y-4 py-4">
+                <div className="space-y-2">
+                  <Label htmlFor="org-name-modal">Organization Name</Label>
+                  <Input
+                    id="org-name-modal"
+                    value={orgName}
+                    onChange={e => setOrgName(e.target.value)}
+                    placeholder="Enter organization name"
+                    required
+                  />
+                </div>
+              </div>
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => { setOpen(false); setEditing(null); }} disabled={saving}>
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={saving}>
+                  {saving ? 'Saving...' : editing ? 'Save Changes' : 'Create Organization'}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   );
 }
