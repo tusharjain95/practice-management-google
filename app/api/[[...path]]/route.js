@@ -409,7 +409,9 @@ function verifyAuth(request) {
 
 function logActivity(db, user, action, entity, entityId, details = {}) {
   return db.collection('activity_logs').insertOne({
-    id: uuidv4(), userId: user?.id, userName: user?.name,
+    id: uuidv4(),
+    orgId: user?.activeOrgId,
+    userId: user?.id, userName: user?.name,
     action, entity, entityId, details,
     createdAt: new Date().toISOString(),
   });
@@ -441,9 +443,45 @@ async function handle(request, ctx) {
     }
 
     if (route === 'auth/me' && method === 'GET') {
-      const u = verifyAuth(request);
-      if (!u) return json({ error: 'Unauthorized' }, 401);
-      return json({ user: u });
+      const decoded = verifyAuth(request);
+      if (!decoded) return json({ error: 'Unauthorized' }, 401);
+      const me = await db.collection('users').findOne({ id: decoded.id });
+      if (!me) return json({ error: 'Unauthorized' }, 401);
+
+      if (!me.orgs || me.orgs.length === 0) {
+        const defaultOrgId = uuidv4();
+        const defaultOrgName = me.name ? `${me.name}'s Org` : "Default Org";
+        const newOrg = {
+          id: defaultOrgId,
+          name: defaultOrgName,
+          createdBy: me.id,
+          createdAt: new Date().toISOString()
+        };
+        await db.collection('organisations').insertOne(newOrg);
+
+        const initialOrgs = [{ orgId: defaultOrgId, role: 'admin' }];
+        await db.collection('users').updateOne({ id: me.id }, { $set: { orgs: initialOrgs } });
+        me.orgs = initialOrgs;
+      }
+
+      let activeOrgId = request.headers.get('x-org-id');
+      let orgMembership = me.orgs.find(o => o.orgId === activeOrgId);
+      if (!orgMembership) {
+        activeOrgId = me.orgs[0].orgId;
+        orgMembership = me.orgs[0];
+      }
+
+      return json({
+        user: {
+          id: me.id,
+          email: me.email,
+          name: me.name,
+          role: orgMembership.role,
+          activeOrgId: activeOrgId,
+          orgs: me.orgs,
+          permissions: me.permissions || {}
+        }
+      });
     }
 
     // Change own password
@@ -515,42 +553,175 @@ async function handle(request, ctx) {
     }
 
     // From here on, auth required
-    const me = verifyAuth(request);
+    const decoded = verifyAuth(request);
+    if (!decoded) return json({ error: 'Unauthorized' }, 401);
+
+    // Fetch the fresh user document
+    const me = await db.collection('users').findOne({ id: decoded.id });
     if (!me) return json({ error: 'Unauthorized' }, 401);
+
+    // Find or initialize organizations for this user
+    if (!me.orgs || me.orgs.length === 0) {
+      const defaultOrgId = uuidv4();
+      const defaultOrgName = me.name ? `${me.name}'s Org` : "Default Org";
+      const newOrg = {
+        id: defaultOrgId,
+        name: defaultOrgName,
+        createdBy: me.id,
+        createdAt: new Date().toISOString()
+      };
+      await db.collection('organisations').insertOne(newOrg);
+
+      const initialOrgs = [{ orgId: defaultOrgId, role: 'admin' }];
+      await db.collection('users').updateOne({ id: me.id }, { $set: { orgs: initialOrgs } });
+      me.orgs = initialOrgs;
+
+      // Migrate existing records that do not have any orgId to this defaultOrgId
+      await db.collection('leads').updateMany({ orgId: { $exists: false } }, { $set: { orgId: defaultOrgId } });
+      await db.collection('tasks').updateMany({ orgId: { $exists: false } }, { $set: { orgId: defaultOrgId } });
+      await db.collection('clients').updateMany({ orgId: { $exists: false } }, { $set: { orgId: defaultOrgId } });
+      await db.collection('invoices').updateMany({ orgId: { $exists: false } }, { $set: { orgId: defaultOrgId } });
+      await db.collection('quotations').updateMany({ orgId: { $exists: false } }, { $set: { orgId: defaultOrgId } });
+      await db.collection('payments').updateMany({ orgId: { $exists: false } }, { $set: { orgId: defaultOrgId } });
+    }
+
+    // Now determine the active organization ID
+    let activeOrgId = request.headers.get('x-org-id');
+    let orgMembership = me.orgs.find(o => o.orgId === activeOrgId);
+    if (!orgMembership) {
+      activeOrgId = me.orgs[0].orgId;
+      orgMembership = me.orgs[0];
+    }
+
+    me.role = orgMembership.role;
+    me.activeOrgId = activeOrgId;
+
+    // -------- ORGANISATIONS --------
+    if (route === 'organisations' && method === 'GET') {
+      const allParam = url.searchParams.get('all');
+      if (allParam === 'true') {
+        if (me.role !== 'admin') {
+          return json({ error: 'Forbidden' }, 403);
+        }
+        const allOrgs = await db.collection('organisations').find({}).toArray();
+        return json({ organisations: allOrgs });
+      }
+
+      const orgIds = me.orgs.map(o => o.orgId);
+      const orgs = await db.collection('organisations').find({ id: { $in: orgIds } }).toArray();
+      // Attach the user's role in each org
+      const list = orgs.map(o => {
+        const mem = me.orgs.find(x => x.orgId === o.id);
+        return {
+          id: o.id,
+          name: o.name,
+          createdAt: o.createdAt,
+          createdBy: o.createdBy,
+          role: mem ? mem.role : 'staff'
+        };
+      });
+      return json({ organisations: list, activeOrgId });
+    }
+
+    if (route === 'organisations' && method === 'POST') {
+      const body = await request.json();
+      if (!body.name || !body.name.trim()) return json({ error: 'Name is required' }, 400);
+      const orgId = uuidv4();
+      const org = {
+        id: orgId,
+        name: body.name.trim(),
+        createdBy: me.id,
+        createdAt: new Date().toISOString()
+      };
+      await db.collection('organisations').insertOne(org);
+      const userOrgs = me.orgs || [];
+      userOrgs.push({ orgId, role: 'admin' });
+      await db.collection('users').updateOne({ id: me.id }, { $set: { orgs: userOrgs } });
+      return json({ ok: true, organisation: { ...org, role: 'admin' } });
+    }
+
+    if (route.startsWith('organisations/') && method === 'PUT') {
+      const id = route.split('/')[1];
+      // Only admins of this organization can edit its details
+      const orgMembership = me.orgs.find(o => o.orgId === id);
+      if (!orgMembership || orgMembership.role !== 'admin') {
+        return json({ error: 'Forbidden' }, 403);
+      }
+      const body = await request.json();
+      if (!body.name || !body.name.trim()) return json({ error: 'Name is required' }, 400);
+
+      await db.collection('organisations').updateOne({ id }, { $set: { name: body.name.trim() } });
+      logActivity(db, me, 'update', 'organisation', id, { name: body.name.trim() });
+      return json({ ok: true });
+    }
 
     // -------- USERS (staff management) --------
     if (route === 'users' && method === 'GET') {
-      const users = await db.collection('users').find({}).project({ passwordHash: 0, _id: 0 }).toArray();
-      return json({ users });
+      const users = await db.collection('users').find({ "orgs.orgId": me.activeOrgId }).project({ passwordHash: 0, _id: 0 }).toArray();
+      // Map roles specific to this organization
+      const mapped = users.map(u => {
+        const o = (u.orgs || []).find(x => x.orgId === me.activeOrgId);
+        return {
+          ...u,
+          role: o ? o.role : 'staff'
+        };
+      });
+      return json({ users: mapped });
     }
     if (route === 'users' && method === 'POST') {
       if (me.role !== 'admin') return json({ error: 'Forbidden' }, 403);
       const body = await request.json();
-      const exists = await db.collection('users').findOne({ email: body.email.toLowerCase().trim() });
-      if (exists) return json({ error: 'Email already exists' }, 400);
+      if (!body.email) return json({ error: 'Email is required' }, 400);
+      const cleanEmail = body.email.toLowerCase().trim();
+      const exists = await db.collection('users').findOne({ email: cleanEmail });
+      
+      if (exists) {
+        const targetOrgs = exists.orgs || [];
+        const alreadyMember = targetOrgs.some(o => o.orgId === me.activeOrgId);
+        if (alreadyMember) return json({ error: 'User is already a member of this organisation' }, 400);
+        
+        targetOrgs.push({ orgId: me.activeOrgId, role: body.role || 'staff' });
+        await db.collection('users').updateOne({ id: exists.id }, { $set: { orgs: targetOrgs } });
+        logActivity(db, me, 'add_user_to_org', 'user', exists.id, { orgId: me.activeOrgId });
+        return json({ ok: true, user: { id: exists.id, name: exists.name, email: exists.email, role: body.role || 'staff' } });
+      }
+
       const passwordHash = await bcrypt.hash(body.password || 'password123', 10);
       const user = {
         id: uuidv4(),
-        email: body.email.toLowerCase().trim(),
+        email: cleanEmail,
         passwordHash,
-        name: body.name,
-        role: body.role || 'staff',
+        name: body.name || cleanEmail.split('@')[0],
         active: true,
         whatsappNumber: body.whatsappNumber || '',
         whatsappOptIn: !!body.whatsappOptIn,
         whatsappNotificationsEnabled: !!body.whatsappNotificationsEnabled,
         dailyRosterEnabled: !!body.dailyRosterEnabled,
         createdAt: new Date().toISOString(),
+        orgs: [{ orgId: me.activeOrgId, role: body.role || 'staff' }],
+        permissions: body.permissions || {},
       };
       await db.collection('users').insertOne(user);
       logActivity(db, me, 'create', 'user', user.id, { name: user.name });
       const { passwordHash: _, _id, ...safe } = user;
-      return json({ user: safe });
+      return json({ user: { ...safe, role: body.role || 'staff' } });
     }
     if (route.startsWith('users/') && method === 'PUT') {
       if (me.role !== 'admin') return json({ error: 'Forbidden' }, 403);
       const id = route.split('/')[1];
+      const sub = route.split('/')[2];
+      
+      if (sub === 'permissions') {
+        const { permissions } = await request.json();
+        await db.collection('users').updateOne({ id }, { $set: { permissions: permissions || {} } });
+        logActivity(db, me, 'update_permissions', 'user', id, { permissions });
+        return json({ ok: true });
+      }
+
       const body = await request.json();
+      const existingUser = await db.collection('users').findOne({ id });
+      if (!existingUser) return json({ error: 'User not found' }, 404);
+
       const update = {};
       if (body.name) update.name = body.name;
       if (body.email) {
@@ -559,13 +730,36 @@ async function handle(request, ctx) {
         if (exists) return json({ error: 'Email already exists' }, 400);
         update.email = cleanEmail;
       }
-      if (body.role) update.role = body.role;
       if (typeof body.active === 'boolean') update.active = body.active;
       if (body.password) update.passwordHash = await bcrypt.hash(body.password, 10);
       if (body.whatsappNumber !== undefined) update.whatsappNumber = body.whatsappNumber;
       if (body.whatsappOptIn !== undefined) update.whatsappOptIn = !!body.whatsappOptIn;
       if (body.whatsappNotificationsEnabled !== undefined) update.whatsappNotificationsEnabled = !!body.whatsappNotificationsEnabled;
       if (body.dailyRosterEnabled !== undefined) update.dailyRosterEnabled = !!body.dailyRosterEnabled;
+
+      if (body.role) {
+        const targetOrgs = existingUser.orgs || [];
+        const orgIdx = targetOrgs.findIndex(o => o.orgId === me.activeOrgId);
+        if (orgIdx !== -1) {
+          targetOrgs[orgIdx].role = body.role;
+          update.orgs = targetOrgs;
+        }
+      }
+
+      if (body.allowedOrgIds) {
+        const targetOrgs = update.orgs || existingUser.orgs || [];
+        const updatedOrgs = [];
+        for (const orgId of body.allowedOrgIds) {
+          const existingOrg = targetOrgs.find(o => o.orgId === orgId);
+          if (existingOrg) {
+            updatedOrgs.push(existingOrg);
+          } else {
+            updatedOrgs.push({ orgId, role: 'staff' });
+          }
+        }
+        update.orgs = updatedOrgs;
+      }
+
       await db.collection('users').updateOne({ id }, { $set: update });
       logActivity(db, me, 'update', 'user', id, update);
       return json({ ok: true });
@@ -573,14 +767,23 @@ async function handle(request, ctx) {
     if (route.startsWith('users/') && method === 'DELETE') {
       if (me.role !== 'admin') return json({ error: 'Forbidden' }, 403);
       const id = route.split('/')[1];
-      await db.collection('users').deleteOne({ id });
-      logActivity(db, me, 'delete', 'user', id);
+      const targetUser = await db.collection('users').findOne({ id });
+      if (targetUser) {
+        const remainingOrgs = (targetUser.orgs || []).filter(o => o.orgId !== me.activeOrgId);
+        if (remainingOrgs.length > 0) {
+          await db.collection('users').updateOne({ id }, { $set: { orgs: remainingOrgs } });
+          logActivity(db, me, 'remove_user_from_org', 'user', id, { orgId: me.activeOrgId });
+        } else {
+          await db.collection('users').deleteOne({ id });
+          logActivity(db, me, 'delete', 'user', id);
+        }
+      }
       return json({ ok: true });
     }
 
     // -------- LEADS --------
     if (route === 'leads' && method === 'GET') {
-      const filter = {};
+      const filter = { orgId: me.activeOrgId };
       if (me.role === 'staff') filter.assignedTo = me.id;
       const id = url.searchParams.get('id');
       if (id) {
@@ -613,6 +816,7 @@ async function handle(request, ctx) {
       const assignedTo = me.role === 'staff' ? me.id : (body.assignedTo || '');
       const lead = {
         id: uuidv4(),
+        orgId: me.activeOrgId,
         name: body.name,
         phone: body.phone || '',
         email: body.email || '',
@@ -636,33 +840,36 @@ async function handle(request, ctx) {
     if (route.startsWith('leads/') && method === 'PUT') {
       const id = route.split('/')[1];
       const sub = route.split('/')[2];
+      const existingLead = await db.collection('leads').findOne({ id, orgId: me.activeOrgId });
+      if (!existingLead) return json({ error: 'Lead not found or access denied' }, 404);
+
       if (sub === 'notes') {
         // Staff can add notes only to their own leads
-        if (me.role === 'staff') {
-          const l = await db.collection('leads').findOne({ id });
-          if (!l || l.assignedTo !== me.id) return json({ error: 'Forbidden' }, 403);
+        if (me.role === 'staff' && existingLead.assignedTo !== me.id) {
+          return json({ error: 'Forbidden' }, 403);
         }
         const { note } = await request.json();
         const entry = { id: uuidv4(), text: note, by: me.name, at: new Date().toISOString() };
-        await db.collection('leads').updateOne({ id }, { $push: { notes: entry }, $set: { updatedAt: new Date().toISOString() } });
+        await db.collection('leads').updateOne({ id, orgId: me.activeOrgId }, { $push: { notes: entry }, $set: { updatedAt: new Date().toISOString() } });
         return json({ ok: true, note: entry });
       }
       const body = await request.json();
       // Staff can edit only their own leads, but may reassign them to other users.
       if (me.role === 'staff') {
-        const l = await db.collection('leads').findOne({ id });
-        if (!l || l.assignedTo !== me.id) return json({ error: 'Forbidden' }, 403);
+        if (existingLead.assignedTo !== me.id) return json({ error: 'Forbidden' }, 403);
         delete body.createdBy;
       }
       body.updatedAt = new Date().toISOString();
-      await db.collection('leads').updateOne({ id }, { $set: body });
+      await db.collection('leads').updateOne({ id, orgId: me.activeOrgId }, { $set: body });
       logActivity(db, me, 'update', 'lead', id, body);
       return json({ ok: true });
     }
     if (route.startsWith('leads/') && method === 'DELETE') {
       if (me.role === 'staff') return json({ error: 'Forbidden' }, 403);
       const id = route.split('/')[1];
-      await db.collection('leads').deleteOne({ id });
+      const existingLead = await db.collection('leads').findOne({ id, orgId: me.activeOrgId });
+      if (!existingLead) return json({ error: 'Lead not found or access denied' }, 404);
+      await db.collection('leads').deleteOne({ id, orgId: me.activeOrgId });
       logActivity(db, me, 'delete', 'lead', id);
       return json({ ok: true });
     }
@@ -671,10 +878,11 @@ async function handle(request, ctx) {
     if (route === 'leads/convert' && method === 'POST') {
       if (me.role === 'staff') return json({ error: 'Forbidden' }, 403);
       const body = await request.json();
-      const lead = await db.collection('leads').findOne({ id: body.leadId });
+      const lead = await db.collection('leads').findOne({ id: body.leadId, orgId: me.activeOrgId });
       if (!lead) return json({ error: 'Lead not found' }, 404);
       const task = {
         id: uuidv4(),
+        orgId: me.activeOrgId,
         title: body.title || `${lead.serviceType} - ${lead.name}`,
         description: body.description || `Converted from lead. Client: ${lead.name}, Company: ${lead.company || '-'}`,
         category: body.category || lead.serviceType,
@@ -690,7 +898,7 @@ async function handle(request, ctx) {
         createdBy: me.id,
       };
       await db.collection('tasks').insertOne(task);
-      await db.collection('leads').updateOne({ id: lead.id }, { $set: { status: 'Converted', updatedAt: new Date().toISOString() } });
+      await db.collection('leads').updateOne({ id: lead.id, orgId: me.activeOrgId }, { $set: { status: 'Converted', updatedAt: new Date().toISOString() } });
       logActivity(db, me, 'convert', 'lead', lead.id, { taskId: task.id });
       const { _id, ...safe } = task;
       return json({ task: safe });
@@ -698,12 +906,17 @@ async function handle(request, ctx) {
 
     // -------- TASKS --------
     if (route === 'tasks' && method === 'GET') {
-      const filter = {};
+      const filter = { orgId: me.activeOrgId };
       if (me.role === 'staff') {
-        filter.$or = [
-          { assignedTo: me.id },
-          { assignees: me.id },
-          { needsDiscussion: true, discussionWith: me.id },
+        filter.$and = [
+          { orgId: me.activeOrgId },
+          {
+            $or: [
+              { assignedTo: me.id },
+              { assignees: me.id },
+              { needsDiscussion: true, discussionWith: me.id },
+            ]
+          }
         ];
       }
       const id = url.searchParams.get('id');
@@ -716,7 +929,13 @@ async function handle(request, ctx) {
         const category = url.searchParams.get('category');
         const discussion = url.searchParams.get('discussion');
         if (status) filter.status = status;
-        if (assignedTo) filter.$or = [{ assignedTo }, { assignees: assignedTo }];
+        if (assignedTo) {
+          if (filter.$and) {
+            filter.$and.push({ $or: [{ assignedTo }, { assignees: assignedTo }] });
+          } else {
+            filter.$or = [{ assignedTo }, { assignees: assignedTo }];
+          }
+        }
         if (priority) filter.priority = priority;
         if (category) filter.category = category;
         if (discussion === 'me') { filter.needsDiscussion = true; filter.discussionWith = me.id; }
@@ -756,6 +975,7 @@ async function handle(request, ctx) {
       const assignedTo = assignees[0] || ''; // primary for legacy
       const task = {
         id: uuidv4(),
+        orgId: me.activeOrgId,
         title: body.title,
         description: body.description || '',
         category: body.category || 'Other',
@@ -811,13 +1031,13 @@ async function handle(request, ctx) {
       if (sub === 'comments') {
         const { comment } = await request.json();
         const entry = { id: uuidv4(), text: comment, by: me.name, at: new Date().toISOString() };
-        await db.collection('tasks').updateOne({ id }, { $push: { comments: entry }, $set: { updatedAt: new Date().toISOString() } });
+        await db.collection('tasks').updateOne({ id, orgId: me.activeOrgId }, { $push: { comments: entry }, $set: { updatedAt: new Date().toISOString() } });
         return json({ ok: true, comment: entry });
       }
       const body = await request.json();
       // Role-based update permissions
       let updatedFields = {};
-      const existing = await db.collection('tasks').findOne({ id });
+      const existing = await db.collection('tasks').findOne({ id, orgId: me.activeOrgId });
       if (!existing) return json({ error: 'Not found' }, 404);
 
       // Auto-set discussion metadata when flag transitions
@@ -855,7 +1075,7 @@ async function handle(request, ctx) {
         }
         allowed.updatedAt = new Date().toISOString();
         updatedFields = allowed;
-        await db.collection('tasks').updateOne({ id }, { $set: allowed });
+        await db.collection('tasks').updateOne({ id, orgId: me.activeOrgId }, { $set: allowed });
       } else {
         // Admin/manager: full update including reassign + discussion resolve
         // If assignees array passed, sync assignedTo to primary
@@ -865,15 +1085,16 @@ async function handle(request, ctx) {
         }
         body.updatedAt = new Date().toISOString();
         updatedFields = body;
-        await db.collection('tasks').updateOne({ id }, { $set: body });
+        await db.collection('tasks').updateOne({ id, orgId: me.activeOrgId }, { $set: body });
       }
       // Recurring task rollover: if marked Completed AND has recurrence, create next occurrence
       if (updatedFields.status === 'Completed') {
-        const current = await db.collection('tasks').findOne({ id }, { projection: { _id: 0 } });
+        const current = await db.collection('tasks').findOne({ id, orgId: me.activeOrgId }, { projection: { _id: 0 } });
         if (current && current.recurrence && current.recurrence !== 'none' && !current.recurrenceSpawned) {
           const next = { ...current };
           delete next._id;
           next.id = uuidv4();
+          next.orgId = me.activeOrgId;
           next.status = 'Pending';
           next.comments = [];
           next.recurrenceSpawned = false;
@@ -893,7 +1114,7 @@ async function handle(request, ctx) {
             next.dueDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
           }
           await db.collection('tasks').insertOne(next);
-          await db.collection('tasks').updateOne({ id: current.id }, { $set: { recurrenceSpawned: true } });
+          await db.collection('tasks').updateOne({ id: current.id, orgId: me.activeOrgId }, { $set: { recurrenceSpawned: true } });
           logActivity(db, me, 'recurring_spawn', 'task', next.id, { from: current.id });
         }
       }
@@ -918,7 +1139,7 @@ async function handle(request, ctx) {
           const addedAssignees = finalAssignees.filter(id => !oldAssignees.includes(id));
           if (addedAssignees.length > 0) {
             // Fetch updated task data
-            db.collection('tasks').findOne({ id }).then(updatedTask => {
+            db.collection('tasks').findOne({ id, orgId: me.activeOrgId }).then(updatedTask => {
               for (const uId of addedAssignees) {
                 db.collection('users').findOne({ id: uId }).then(targetUser => {
                   if (targetUser) {
@@ -944,14 +1165,14 @@ async function handle(request, ctx) {
     if (route.startsWith('tasks/') && method === 'DELETE') {
       if (me.role === 'staff') return json({ error: 'Forbidden' }, 403);
       const id = route.split('/')[1];
-      await db.collection('tasks').deleteOne({ id });
+      await db.collection('tasks').deleteOne({ id, orgId: me.activeOrgId });
       logActivity(db, me, 'delete', 'task', id);
       return json({ ok: true });
     }
 
     // -------- QUOTATIONS --------
     if (route === 'quotations' && method === 'GET') {
-      const filter = me.role === 'staff' ? { createdBy: me.id } : {};
+      const filter = me.role === 'staff' ? { orgId: me.activeOrgId, createdBy: me.id } : { orgId: me.activeOrgId };
       const id = url.searchParams.get('id');
       if (id) filter.id = id;
 
@@ -970,7 +1191,7 @@ async function handle(request, ctx) {
     }
     if (route === 'quotations' && method === 'POST') {
       const body = await request.json();
-      const count = await db.collection('quotations').countDocuments();
+      const count = await db.collection('quotations').countDocuments({ orgId: me.activeOrgId });
       const year = new Date().getFullYear();
       const quotationNumber = `QT-${year}-${String(count + 1).padStart(4, '0')}`;
       const subtotal = (body.services || []).reduce((s, it) => s + (Number(it.price) || 0) * (Number(it.qty) || 1), 0);
@@ -978,6 +1199,7 @@ async function handle(request, ctx) {
       const total = +(subtotal + gstAmount).toFixed(2);
       const quote = {
         id: uuidv4(),
+        orgId: me.activeOrgId,
         quotationNumber,
         clientName: body.clientName,
         companyName: body.companyName || '',
@@ -1006,7 +1228,7 @@ async function handle(request, ctx) {
     }
     if (route.startsWith('quotations/') && method === 'GET') {
       const id = route.split('/')[1];
-      const q = await db.collection('quotations').findOne({ id }, { projection: { _id: 0 } });
+      const q = await db.collection('quotations').findOne({ id, orgId: me.activeOrgId }, { projection: { _id: 0 } });
       if (!q) return json({ error: 'Not found' }, 404);
       return json({ quotation: q });
     }
@@ -1014,7 +1236,7 @@ async function handle(request, ctx) {
       if (me.role === 'staff') return json({ error: 'Forbidden' }, 403);
       const id = route.split('/')[1];
       const body = await request.json();
-      const existing = await db.collection('quotations').findOne({ id });
+      const existing = await db.collection('quotations').findOne({ id, orgId: me.activeOrgId });
       if (!existing) return json({ error: 'Not found' }, 404);
       // Recalculate totals on edit
       const services = body.services || existing.services || [];
@@ -1037,15 +1259,17 @@ async function handle(request, ctx) {
       delete update.createdAt;
       delete update.createdBy;
       delete update.createdByName;
-      await db.collection('quotations').updateOne({ id }, { $set: update });
+      await db.collection('quotations').updateOne({ id, orgId: me.activeOrgId }, { $set: update });
       logActivity(db, me, 'update', 'quotation', id, { quotationNumber: existing.quotationNumber });
-      const fresh = await db.collection('quotations').findOne({ id }, { projection: { _id: 0 } });
+      const fresh = await db.collection('quotations').findOne({ id, orgId: me.activeOrgId }, { projection: { _id: 0 } });
       return json({ quotation: fresh });
     }
     if (route.startsWith('quotations/') && method === 'DELETE') {
       if (me.role === 'staff') return json({ error: 'Forbidden' }, 403);
       const id = route.split('/')[1];
-      await db.collection('quotations').deleteOne({ id });
+      const existing = await db.collection('quotations').findOne({ id, orgId: me.activeOrgId });
+      if (!existing) return json({ error: 'Not found' }, 404);
+      await db.collection('quotations').deleteOne({ id, orgId: me.activeOrgId });
       return json({ ok: true });
     }
 
@@ -1057,7 +1281,7 @@ async function handle(request, ctx) {
       let enriched = [];
       let total = 0;
 
-      const filter = {};
+      const filter = { orgId: me.activeOrgId };
       const id = url.searchParams.get('id');
       if (id) filter.id = id;
 
@@ -1091,6 +1315,7 @@ async function handle(request, ctx) {
             $project: {
               _id: 0,
               id: 1,
+              orgId: 1,
               name: 1,
               company: 1,
               phone: 1,
@@ -1136,8 +1361,8 @@ async function handle(request, ctx) {
         total = clients.length;
         const pageClients = clients.slice(skip, skip + limit);
         for (const c of pageClients) {
-          const invoices = await db.collection('invoices').find({ clientId: c.id }).project({ _id: 0 }).toArray();
-          const payments = await db.collection('payments').find({ clientId: c.id }).project({ _id: 0 }).toArray();
+          const invoices = await db.collection('invoices').find({ clientId: c.id, orgId: me.activeOrgId }).project({ _id: 0 }).toArray();
+          const payments = await db.collection('payments').find({ clientId: c.id, orgId: me.activeOrgId }).project({ _id: 0 }).toArray();
           const billed = invoices.reduce((s, i) => s + (i.total || 0), 0);
           const received = payments.reduce((s, p) => s + (p.amount || 0), 0);
           const netDue = +((c.openingBalance || 0) + billed - received).toFixed(2);
@@ -1159,6 +1384,7 @@ async function handle(request, ctx) {
       const body = await request.json();
       const client = {
         id: uuidv4(),
+        orgId: me.activeOrgId,
         name: body.name,
         company: body.company || '',
         phone: body.phone || '',
@@ -1189,8 +1415,8 @@ async function handle(request, ctx) {
 
       if (!rows.length) return json({ error: 'No rows to import' }, 400);
 
-      // Pre-fetch existing for duplicate detection (by name+phone or gstin)
-      const existing = await db.collection('clients').find({}).project({ name: 1, phone: 1, gstin: 1, _id: 0 }).toArray();
+      // Pre-fetch existing for duplicate detection (by name+phone or gstin) within this organization!
+      const existing = await db.collection('clients').find({ orgId: me.activeOrgId }).project({ name: 1, phone: 1, gstin: 1, _id: 0 }).toArray();
       const dupeKey = (r) => `${(r.name || '').trim().toLowerCase()}|${(r.phone || '').trim()}`;
       const gstinSet = new Set(existing.filter(e => e.gstin).map(e => e.gstin.trim().toUpperCase()));
       const nameSet = new Set(existing.map(e => dupeKey(e)));
@@ -1254,6 +1480,7 @@ async function handle(request, ctx) {
 
         const client = {
           id: uuidv4(),
+          orgId: me.activeOrgId,
           name,
           company,
           phone,
@@ -1297,11 +1524,11 @@ async function handle(request, ctx) {
     if (route.startsWith('clients/') && method === 'GET') {
       const id = route.split('/')[1];
       const sub = route.split('/')[2];
-      const client = await db.collection('clients').findOne({ id }, { projection: { _id: 0 } });
+      const client = await db.collection('clients').findOne({ id, orgId: me.activeOrgId }, { projection: { _id: 0 } });
       if (!client) return json({ error: 'Not found' }, 404);
       if (sub === 'ledger') {
-        const invoices = await db.collection('invoices').find({ clientId: id }).project({ _id: 0 }).sort({ createdAt: 1 }).toArray();
-        const payments = await db.collection('payments').find({ clientId: id }).project({ _id: 0 }).sort({ date: 1 }).toArray();
+        const invoices = await db.collection('invoices').find({ clientId: id, orgId: me.activeOrgId }).project({ _id: 0 }).sort({ createdAt: 1 }).toArray();
+        const payments = await db.collection('payments').find({ clientId: id, orgId: me.activeOrgId }).project({ _id: 0 }).sort({ date: 1 }).toArray();
         const billed = invoices.reduce((s, i) => s + (i.total || 0), 0);
         const received = payments.reduce((s, p) => s + (p.amount || 0), 0);
         const netDue = +((client.openingBalance || 0) + billed - received).toFixed(2);
@@ -1320,23 +1547,27 @@ async function handle(request, ctx) {
     if (route.startsWith('clients/') && method === 'PUT') {
       if (me.role === 'staff') return json({ error: 'Forbidden' }, 403);
       const id = route.split('/')[1];
+      const existingClient = await db.collection('clients').findOne({ id, orgId: me.activeOrgId });
+      if (!existingClient) return json({ error: 'Not found' }, 404);
       const body = await request.json();
       if (body.openingBalance !== undefined) body.openingBalance = Number(body.openingBalance);
-      await db.collection('clients').updateOne({ id }, { $set: body });
+      await db.collection('clients').updateOne({ id, orgId: me.activeOrgId }, { $set: body });
       logActivity(db, me, 'update', 'client', id, body);
       return json({ ok: true });
     }
     if (route.startsWith('clients/') && method === 'DELETE') {
       if (me.role !== 'admin') return json({ error: 'Forbidden' }, 403);
       const id = route.split('/')[1];
-      await db.collection('clients').deleteOne({ id });
+      const existingClient = await db.collection('clients').findOne({ id, orgId: me.activeOrgId });
+      if (!existingClient) return json({ error: 'Not found' }, 404);
+      await db.collection('clients').deleteOne({ id, orgId: me.activeOrgId });
       logActivity(db, me, 'delete', 'client', id);
       return json({ ok: true });
     }
 
     // -------- INVOICES --------
     if (route === 'invoices' && method === 'GET') {
-      const filter = {};
+      const filter = { orgId: me.activeOrgId };
       const id = url.searchParams.get('id');
       if (id) {
         filter.id = id;
@@ -1353,7 +1584,7 @@ async function handle(request, ctx) {
 
       // attach paidAmount per invoice for the current page only
       for (const inv of data) {
-        const pays = await db.collection('payments').find({ invoiceId: inv.id }).toArray();
+        const pays = await db.collection('payments').find({ invoiceId: inv.id, orgId: me.activeOrgId }).toArray();
         inv.paidAmount = +pays.reduce((s, p) => s + (p.amount || 0), 0).toFixed(2);
         inv.dueAmount = +(inv.total - inv.paidAmount).toFixed(2);
       }
@@ -1370,7 +1601,7 @@ async function handle(request, ctx) {
     if (route === 'invoices' && method === 'POST') {
       if (me.role === 'staff') return json({ error: 'Forbidden' }, 403);
       const body = await request.json();
-      const count = await db.collection('invoices').countDocuments();
+      const count = await db.collection('invoices').countDocuments({ orgId: me.activeOrgId });
       const year = new Date().getFullYear();
       const invoiceNumber = `INV-${year}-${String(count + 1).padStart(4, '0')}`;
       const subtotal = (body.items || []).reduce((s, it) => s + (Number(it.rate) || 0) * (Number(it.qty) || 1), 0);
@@ -1378,6 +1609,7 @@ async function handle(request, ctx) {
       const total = +(subtotal + gstAmount).toFixed(2);
       const inv = {
         id: uuidv4(),
+        orgId: me.activeOrgId,
         invoiceNumber,
         clientId: body.clientId || null,
         clientName: body.clientName,
@@ -1401,9 +1633,9 @@ async function handle(request, ctx) {
     }
     if (route.startsWith('invoices/') && method === 'GET') {
       const id = route.split('/')[1];
-      const inv = await db.collection('invoices').findOne({ id }, { projection: { _id: 0 } });
+      const inv = await db.collection('invoices').findOne({ id, orgId: me.activeOrgId }, { projection: { _id: 0 } });
       if (!inv) return json({ error: 'Not found' }, 404);
-      const pays = await db.collection('payments').find({ invoiceId: id }).project({ _id: 0 }).toArray();
+      const pays = await db.collection('payments').find({ invoiceId: id, orgId: me.activeOrgId }).project({ _id: 0 }).toArray();
       inv.paidAmount = +pays.reduce((s, p) => s + (p.amount || 0), 0).toFixed(2);
       inv.dueAmount = +(inv.total - inv.paidAmount).toFixed(2);
       inv.payments = pays;
@@ -1412,22 +1644,26 @@ async function handle(request, ctx) {
     if (route.startsWith('invoices/') && method === 'PUT') {
       if (me.role === 'staff') return json({ error: 'Forbidden' }, 403);
       const id = route.split('/')[1];
+      const existingInvoice = await db.collection('invoices').findOne({ id, orgId: me.activeOrgId });
+      if (!existingInvoice) return json({ error: 'Not found' }, 404);
       const body = await request.json();
-      await db.collection('invoices').updateOne({ id }, { $set: body });
+      await db.collection('invoices').updateOne({ id, orgId: me.activeOrgId }, { $set: body });
       logActivity(db, me, 'update', 'invoice', id);
       return json({ ok: true });
     }
     if (route.startsWith('invoices/') && method === 'DELETE') {
       if (me.role !== 'admin') return json({ error: 'Forbidden' }, 403);
       const id = route.split('/')[1];
-      await db.collection('invoices').deleteOne({ id });
+      const existingInvoice = await db.collection('invoices').findOne({ id, orgId: me.activeOrgId });
+      if (!existingInvoice) return json({ error: 'Not found' }, 404);
+      await db.collection('invoices').deleteOne({ id, orgId: me.activeOrgId });
       logActivity(db, me, 'delete', 'invoice', id);
       return json({ ok: true });
     }
 
     // -------- PAYMENTS --------
     if (route === 'payments' && method === 'GET') {
-      const filter = {};
+      const filter = { orgId: me.activeOrgId };
       const clientId = url.searchParams.get('clientId');
       const invoiceId = url.searchParams.get('invoiceId');
       if (clientId) filter.clientId = clientId;
@@ -1451,6 +1687,7 @@ async function handle(request, ctx) {
       const body = await request.json();
       const payment = {
         id: uuidv4(),
+        orgId: me.activeOrgId,
         clientId: body.clientId,
         invoiceId: body.invoiceId || null,
         amount: Number(body.amount) || 0,
@@ -1464,12 +1701,12 @@ async function handle(request, ctx) {
       await db.collection('payments').insertOne(payment);
       // Update invoice status if applicable
       if (payment.invoiceId) {
-        const inv = await db.collection('invoices').findOne({ id: payment.invoiceId });
+        const inv = await db.collection('invoices').findOne({ id: payment.invoiceId, orgId: me.activeOrgId });
         if (inv) {
-          const pays = await db.collection('payments').find({ invoiceId: inv.id }).toArray();
+          const pays = await db.collection('payments').find({ invoiceId: inv.id, orgId: me.activeOrgId }).toArray();
           const totalPaid = pays.reduce((s, p) => s + (p.amount || 0), 0);
           const newStatus = totalPaid >= inv.total ? 'Paid' : (totalPaid > 0 ? 'Partial' : 'Unpaid');
-          await db.collection('invoices').updateOne({ id: inv.id }, { $set: { status: newStatus } });
+          await db.collection('invoices').updateOne({ id: inv.id, orgId: me.activeOrgId }, { $set: { status: newStatus } });
         }
       }
       logActivity(db, me, 'create', 'payment', payment.id, { amount: payment.amount });
@@ -1479,25 +1716,27 @@ async function handle(request, ctx) {
     if (route.startsWith('payments/') && method === 'DELETE') {
       if (me.role !== 'admin') return json({ error: 'Forbidden' }, 403);
       const id = route.split('/')[1];
-      const p = await db.collection('payments').findOne({ id });
-      await db.collection('payments').deleteOne({ id });
+      const p = await db.collection('payments').findOne({ id, orgId: me.activeOrgId });
+      if (!p) return json({ error: 'Payment not found' }, 404);
+      await db.collection('payments').deleteOne({ id, orgId: me.activeOrgId });
       if (p && p.invoiceId) {
-        const inv = await db.collection('invoices').findOne({ id: p.invoiceId });
+        const inv = await db.collection('invoices').findOne({ id: p.invoiceId, orgId: me.activeOrgId });
         if (inv) {
-          const pays = await db.collection('payments').find({ invoiceId: inv.id }).toArray();
+          const pays = await db.collection('payments').find({ invoiceId: inv.id, orgId: me.activeOrgId }).toArray();
           const totalPaid = pays.reduce((s, x) => s + (x.amount || 0), 0);
           const newStatus = totalPaid >= inv.total ? 'Paid' : (totalPaid > 0 ? 'Partial' : 'Unpaid');
-          await db.collection('invoices').updateOne({ id: inv.id }, { $set: { status: newStatus } });
+          await db.collection('invoices').updateOne({ id: inv.id, orgId: me.activeOrgId }, { $set: { status: newStatus } });
         }
       }
       return json({ ok: true });
     }
 
-    // -------- BRANDING (single doc) --------
+    // -------- BRANDING (single doc per org) --------
     if (route === 'branding' && method === 'GET') {
-      const b = await db.collection('settings').findOne({ id: 'branding' }, { projection: { _id: 0 } });
+      const b = await db.collection('settings').findOne({ id: 'branding', orgId: me.activeOrgId }, { projection: { _id: 0 } });
       return json({ branding: b || {
         id: 'branding',
+        orgId: me.activeOrgId,
         firmName: 'ABC & Associates, Chartered Accountants',
         firmAddress: '123 Business District, Mumbai - 400001',
         firmGstin: '27AABCU9603R1ZX',
@@ -1517,8 +1756,9 @@ async function handle(request, ctx) {
       if (me.role !== 'admin') return json({ error: 'Forbidden' }, 403);
       const body = await request.json();
       body.id = 'branding';
+      body.orgId = me.activeOrgId;
       body.updatedAt = new Date().toISOString();
-      await db.collection('settings').updateOne({ id: 'branding' }, { $set: body }, { upsert: true });
+      await db.collection('settings').updateOne({ id: 'branding', orgId: me.activeOrgId }, { $set: body }, { upsert: true });
       logActivity(db, me, 'update', 'branding', 'branding');
       return json({ ok: true });
     }
@@ -1532,11 +1772,11 @@ async function handle(request, ctx) {
       const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
       const filterStaff = me.role === 'staff' ? { assignedTo: me.id } : {};
       const [leads, tasks, clients, invoices, quotations] = await Promise.all([
-        db.collection('leads').find({ ...filterStaff, $or: [{ name: rx }, { phone: rx }, { email: rx }, { company: rx }] }).project({ _id: 0 }).limit(5).toArray(),
-        db.collection('tasks').find({ ...filterStaff, $or: [{ title: rx }, { description: rx }, { clientName: rx }] }).project({ _id: 0 }).limit(5).toArray(),
-        me.role !== 'staff' ? db.collection('clients').find({ $or: [{ name: rx }, { company: rx }, { phone: rx }, { email: rx }, { gstin: rx }] }).project({ _id: 0 }).limit(5).toArray() : [],
-        me.role !== 'staff' ? db.collection('invoices').find({ $or: [{ invoiceNumber: rx }, { clientName: rx }, { companyName: rx }] }).project({ _id: 0 }).limit(5).toArray() : [],
-        me.role !== 'staff' ? db.collection('quotations').find({ $or: [{ quotationNumber: rx }, { clientName: rx }, { companyName: rx }] }).project({ _id: 0 }).limit(5).toArray() : [],
+        db.collection('leads').find({ orgId: me.activeOrgId, ...filterStaff, $or: [{ name: rx }, { phone: rx }, { email: rx }, { company: rx }] }).project({ _id: 0 }).limit(5).toArray(),
+        db.collection('tasks').find({ orgId: me.activeOrgId, ...filterStaff, $or: [{ title: rx }, { description: rx }, { clientName: rx }] }).project({ _id: 0 }).limit(5).toArray(),
+        me.role !== 'staff' ? db.collection('clients').find({ orgId: me.activeOrgId, $or: [{ name: rx }, { company: rx }, { phone: rx }, { email: rx }, { gstin: rx }] }).project({ _id: 0 }).limit(5).toArray() : [],
+        me.role !== 'staff' ? db.collection('invoices').find({ orgId: me.activeOrgId, $or: [{ invoiceNumber: rx }, { clientName: rx }, { companyName: rx }] }).project({ _id: 0 }).limit(5).toArray() : [],
+        me.role !== 'staff' ? db.collection('quotations').find({ orgId: me.activeOrgId, $or: [{ quotationNumber: rx }, { clientName: rx }, { companyName: rx }] }).project({ _id: 0 }).limit(5).toArray() : [],
       ]);
       return json({ leads, tasks, clients, invoices, quotations });
     }
@@ -1545,9 +1785,9 @@ async function handle(request, ctx) {
     if (route === 'calendar' && method === 'GET') {
       const from = url.searchParams.get('from'); // ISO date
       const to = url.searchParams.get('to');
-      const filter = me.role === 'staff' ? { assignedTo: me.id } : {};
+      const filter = me.role === 'staff' ? { orgId: me.activeOrgId, assignedTo: me.id } : { orgId: me.activeOrgId };
       const tasks = await db.collection('tasks').find({ ...filter, dueDate: { $ne: '', $gte: from || '', $lte: to || '9999' } }).project({ _id: 0 }).toArray();
-      const leadFilter = me.role === 'staff' ? { assignedTo: me.id } : {};
+      const leadFilter = me.role === 'staff' ? { orgId: me.activeOrgId, assignedTo: me.id } : { orgId: me.activeOrgId };
       const leads = await db.collection('leads').find({ ...leadFilter, followUpDate: { $ne: '', $gte: from || '', $lte: to || '9999' } }).project({ _id: 0 }).toArray();
       return json({ tasks, leads });
     }
@@ -1555,7 +1795,7 @@ async function handle(request, ctx) {
     if (route === 'reminders' && method === 'GET') {
       const today = new Date().toISOString().slice(0, 10);
       const in7 = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
-      const filterStaff = me.role === 'staff' ? { assignedTo: me.id } : {};
+      const filterStaff = me.role === 'staff' ? { orgId: me.activeOrgId, assignedTo: me.id } : { orgId: me.activeOrgId };
       const dueToday = await db.collection('tasks').find({ ...filterStaff, status: { $ne: 'Completed' }, dueDate: today }).project({ _id: 0 }).toArray();
       const upcoming = await db.collection('tasks').find({ ...filterStaff, status: { $ne: 'Completed' }, dueDate: { $gt: today, $lte: in7 } }).project({ _id: 0 }).sort({ dueDate: 1 }).toArray();
       const overdue = await db.collection('tasks').find({ ...filterStaff, status: { $ne: 'Completed' }, dueDate: { $ne: '', $lt: today } }).project({ _id: 0 }).sort({ dueDate: 1 }).toArray();
@@ -1569,11 +1809,11 @@ async function handle(request, ctx) {
     if (route === 'reports/aging' && method === 'GET') {
       const today = new Date();
       const todayStr = today.toISOString().slice(0, 10);
-      const clients = await db.collection('clients').find({}).project({ _id: 0 }).toArray();
-      const allInvoices = await db.collection('invoices').find({ status: { $ne: 'Paid' } }).project({ _id: 0 }).toArray();
+      const clients = await db.collection('clients').find({ orgId: me.activeOrgId }).project({ _id: 0 }).toArray();
+      const allInvoices = await db.collection('invoices').find({ orgId: me.activeOrgId, status: { $ne: 'Paid' } }).project({ _id: 0 }).toArray();
       // attach paidAmount/dueAmount
       for (const inv of allInvoices) {
-        const pays = await db.collection('payments').find({ invoiceId: inv.id }).toArray();
+        const pays = await db.collection('payments').find({ invoiceId: inv.id, orgId: me.activeOrgId }).toArray();
         inv.paidAmount = +pays.reduce((s, p) => s + (p.amount || 0), 0).toFixed(2);
         inv.dueAmount = +(inv.total - inv.paidAmount).toFixed(2);
       }
@@ -1619,12 +1859,12 @@ async function handle(request, ctx) {
         // Opening balance handling - bucket by openingBalanceAsOn date
         if (c && c.openingBalance > 0) {
           // First account for payments without invoice (on-account payments reduce opening)
-          const onAccount = await db.collection('payments').find({ clientId: c.id, invoiceId: null }).toArray();
-          const allClientPayments = await db.collection('payments').find({ clientId: c.id }).toArray();
+          const onAccount = await db.collection('payments').find({ clientId: c.id, invoiceId: null, orgId: me.activeOrgId }).toArray();
+          const allClientPayments = await db.collection('payments').find({ clientId: c.id, orgId: me.activeOrgId }).toArray();
           const totalPaid = allClientPayments.reduce((s, p) => s + (p.amount || 0), 0);
           const invoicesTotal = (byClient.get(c.id)?.invoices || []).reduce((s, i) => s + (i.total || 0), 0);
           // remaining opening = opening - max(0, payments - invoices)
-          const allInvForClient = await db.collection('invoices').find({ clientId: c.id }).toArray();
+          const allInvForClient = await db.collection('invoices').find({ clientId: c.id, orgId: me.activeOrgId }).toArray();
           const fullBilled = allInvForClient.reduce((s, i) => s + (i.total || 0), 0);
           const remainingOpening = Math.max(0, c.openingBalance - Math.max(0, totalPaid - fullBilled));
           // simpler: opening contribution to netDue = opening - (totalPaid applied to opening after invoices)
@@ -1756,7 +1996,7 @@ async function handle(request, ctx) {
       const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).toISOString();
 
       if (me.role === 'staff') {
-        const my = { assignedTo: me.id };
+        const my = { orgId: me.activeOrgId, assignedTo: me.id };
         const [allMine, pending, inProg, done] = await Promise.all([
           tasksCol.countDocuments(my),
           tasksCol.countDocuments({ ...my, status: 'Pending' }),
@@ -1772,7 +2012,7 @@ async function handle(request, ctx) {
         const recent = await tasksCol.find(my).project({ _id: 0 }).sort({ createdAt: -1 }).limit(5).toArray();
         // Tasks where I raised a discussion that's still pending
         const myDiscussionsRaised = await tasksCol.find({
-          discussionRaisedBy: me.id, needsDiscussion: true,
+          orgId: me.activeOrgId, discussionRaisedBy: me.id, needsDiscussion: true,
         }).project({ _id: 0 }).sort({ discussionRaisedAt: -1 }).limit(10).toArray();
         return json({
           role: 'staff',
@@ -1783,39 +2023,44 @@ async function handle(request, ctx) {
       }
 
       const [totalLeads, newLeads, inProgress, converted, cancelled] = await Promise.all([
-        leadsCol.countDocuments({}),
-        leadsCol.countDocuments({ status: 'New' }),
-        leadsCol.countDocuments({ status: 'In Progress' }),
-        leadsCol.countDocuments({ status: 'Converted' }),
-        leadsCol.countDocuments({ status: 'Cancelled' }),
+        leadsCol.countDocuments({ orgId: me.activeOrgId }),
+        leadsCol.countDocuments({ orgId: me.activeOrgId, status: 'New' }),
+        leadsCol.countDocuments({ orgId: me.activeOrgId, status: 'In Progress' }),
+        leadsCol.countDocuments({ orgId: me.activeOrgId, status: 'Converted' }),
+        leadsCol.countDocuments({ orgId: me.activeOrgId, status: 'Cancelled' }),
       ]);
       const [totalTasks, pendingTasks, inProgTasks, doneTasks] = await Promise.all([
-        tasksCol.countDocuments({}),
-        tasksCol.countDocuments({ status: 'Pending' }),
-        tasksCol.countDocuments({ status: 'In Progress' }),
-        tasksCol.countDocuments({ status: 'Completed' }),
+        tasksCol.countDocuments({ orgId: me.activeOrgId }),
+        tasksCol.countDocuments({ orgId: me.activeOrgId, status: 'Pending' }),
+        tasksCol.countDocuments({ orgId: me.activeOrgId, status: 'In Progress' }),
+        tasksCol.countDocuments({ orgId: me.activeOrgId, status: 'Completed' }),
       ]);
       const overdueTasks = await tasksCol.countDocuments({
-        status: { $ne: 'Completed' }, dueDate: { $ne: '', $lt: todayStart },
+        orgId: me.activeOrgId, status: { $ne: 'Completed' }, dueDate: { $ne: '', $lt: todayStart },
       });
 
       // Staff perf
-      const users = await db.collection('users').find({ role: { $in: ['staff', 'manager'] } }).project({ _id: 0, passwordHash: 0 }).toArray();
+      const users = await db.collection('users').find({ "orgs.orgId": me.activeOrgId }).project({ _id: 0, passwordHash: 0 }).toArray();
       const perf = [];
       for (const u of users) {
+        // Find role in this org specifically
+        const orgMembership = (u.orgs || []).find(o => o.orgId === me.activeOrgId);
+        const uRole = orgMembership ? orgMembership.role : 'staff';
+        if (uRole === 'admin') continue; // only show performance for non-admin/staff
+
         const [assigned, done, pending] = await Promise.all([
-          tasksCol.countDocuments({ assignedTo: u.id }),
-          tasksCol.countDocuments({ assignedTo: u.id, status: 'Completed' }),
-          tasksCol.countDocuments({ assignedTo: u.id, status: { $ne: 'Completed' } }),
+          tasksCol.countDocuments({ orgId: me.activeOrgId, assignedTo: u.id }),
+          tasksCol.countDocuments({ orgId: me.activeOrgId, assignedTo: u.id, status: 'Completed' }),
+          tasksCol.countDocuments({ orgId: me.activeOrgId, assignedTo: u.id, status: { $ne: 'Completed' } }),
         ]);
-        perf.push({ id: u.id, name: u.name, role: u.role, assigned, done, pending });
+        perf.push({ id: u.id, name: u.name, role: uRole, assigned, done, pending });
       }
-      const recentLeads = await leadsCol.find({}).project({ _id: 0 }).sort({ createdAt: -1 }).limit(5).toArray();
-      const recentTasks = await tasksCol.find({}).project({ _id: 0 }).sort({ createdAt: -1 }).limit(5).toArray();
+      const recentLeads = await leadsCol.find({ orgId: me.activeOrgId }).project({ _id: 0 }).sort({ createdAt: -1 }).limit(5).toArray();
+      const recentTasks = await tasksCol.find({ orgId: me.activeOrgId }).project({ _id: 0 }).sort({ createdAt: -1 }).limit(5).toArray();
 
       // Tasks awaiting MY discussion (where discussionWith === me.id AND needsDiscussion)
       const awaitingDiscussion = await tasksCol.find({
-        needsDiscussion: true, discussionWith: me.id,
+        orgId: me.activeOrgId, needsDiscussion: true, discussionWith: me.id,
       }).project({ _id: 0 }).sort({ discussionRaisedAt: -1 }).limit(10).toArray();
 
       return json({
@@ -1832,8 +2077,9 @@ async function handle(request, ctx) {
     // -------- ACTIVITY LOG --------
     if (route === 'activity' && method === 'GET') {
       const { page, limit } = getPaginationParams(url.searchParams);
-      const total = await db.collection('activity_logs').countDocuments({});
-      const data = await db.collection('activity_logs').find({}).project({ _id: 0 }).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).toArray();
+      const filter = { orgId: me.activeOrgId };
+      const total = await db.collection('activity_logs').countDocuments(filter);
+      const data = await db.collection('activity_logs').find(filter).project({ _id: 0 }).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).toArray();
 
       return json({
         logs: data, // compat
@@ -1852,7 +2098,7 @@ async function handle(request, ctx) {
       'payments', 'quotations', 'compliances', 'settings', 'activity_logs',
     ];
 
-    // GET /api/backup/export -> returns a JSON file with all data
+    // GET /api/backup/export -> returns a JSON file with all data (scoped to active org)
     if (route === 'backup/export' && method === 'GET') {
       if (me.role !== 'admin') return json({ error: 'Forbidden — admin only' }, 403);
       const includeLogs = url.searchParams.get('includeLogs') !== 'false';
@@ -1862,7 +2108,16 @@ async function handle(request, ctx) {
       const counts = {};
       for (const name of BACKUP_COLLECTIONS) {
         if (!includeLogs && name === 'activity_logs') continue;
-        const docs = await db.collection(name).find({}).project({ _id: 0 }).toArray();
+        
+        let docs = [];
+        if (name === 'users') {
+          docs = await db.collection('users').find({ "orgs.orgId": me.activeOrgId }).project({ _id: 0 }).toArray();
+        } else if (name === 'settings') {
+          docs = await db.collection('settings').find({ $or: [{ orgId: me.activeOrgId }, { id: `branding-${me.activeOrgId}` }] }).project({ _id: 0 }).toArray();
+        } else {
+          docs = await db.collection(name).find({ orgId: me.activeOrgId }).project({ _id: 0 }).toArray();
+        }
+
         // strip password hashes optionally (users still need a hash on restore, so default keep)
         if (name === 'users' && !includePasswords) {
           for (const u of docs) delete u.passwordHash;
@@ -1877,6 +2132,7 @@ async function handle(request, ctx) {
           schemaVersion: 1,
           exportedAt: new Date().toISOString(),
           exportedBy: { id: me.id, email: me.email, name: me.name },
+          activeOrgId: me.activeOrgId,
           dbName: DB_NAME,
           includeLogs,
           includePasswords,
@@ -1895,7 +2151,7 @@ async function handle(request, ctx) {
       });
     }
 
-    // POST /api/backup/import -> restores from JSON payload
+    // POST /api/backup/import -> restores from JSON payload (scoped to active org)
     // body: { mode: 'replace' | 'merge', payload: <export JSON>, collections?: [...] }
     if (route === 'backup/import' && method === 'POST') {
       if (me.role !== 'admin') return json({ error: 'Forbidden — admin only' }, 403);
@@ -1918,17 +2174,16 @@ async function handle(request, ctx) {
         const col = db.collection(name);
 
         if (mode === 'replace') {
-          // Protect the currently-logged-in admin from being wiped if not in backup
           if (name === 'users') {
-            const incomingIds = new Set(docs.map(d => d.id).filter(Boolean));
-            if (!incomingIds.has(me.id)) {
-              // Keep self; only delete others
-              await col.deleteMany({ id: { $ne: me.id } });
-            } else {
-              await col.deleteMany({});
-            }
+            // Remove activeOrgId membership from all users except myself
+            await col.updateMany(
+              { id: { $ne: me.id }, "orgs.orgId": me.activeOrgId },
+              { $pull: { orgs: { orgId: me.activeOrgId } } }
+            );
+          } else if (name === 'settings') {
+            await col.deleteMany({ $or: [{ orgId: me.activeOrgId }, { id: `branding-${me.activeOrgId}` }] });
           } else {
-            await col.deleteMany({});
+            await col.deleteMany({ orgId: me.activeOrgId });
           }
         }
 
@@ -1940,25 +2195,47 @@ async function handle(request, ctx) {
           // Ensure id exists (UUIDs are mandatory)
           if (!doc.id) doc.id = uuidv4();
 
-          // For users without passwordHash, set a placeholder so login still requires a reset
-          if (name === 'users' && !doc.passwordHash) {
-            // Use a known-bad hash so account exists but cannot log in until admin resets
-            doc.passwordHash = await bcrypt.hash(uuidv4(), 10);
-          }
-
-          if (mode === 'replace') {
-            await col.insertOne(doc);
-            inserted++;
-          } else {
-            // Merge: upsert by id
+          if (name === 'users') {
+            // For users without passwordHash, set a placeholder so login still requires a reset
+            if (!doc.passwordHash) {
+              doc.passwordHash = await bcrypt.hash(uuidv4(), 10);
+            }
+            // Ensure the user has the active org in their memberships
             const exists = await col.findOne({ id: doc.id });
             if (exists) {
-              const { id: _id1, ...rest } = doc;
-              await col.updateOne({ id: doc.id }, { $set: rest });
+              const targetOrgs = exists.orgs || [];
+              const orgMembership = targetOrgs.find(o => o.orgId === me.activeOrgId);
+              if (!orgMembership) {
+                targetOrgs.push({ orgId: me.activeOrgId, role: 'staff' });
+              }
+              await col.updateOne({ id: doc.id }, { $set: { orgs: targetOrgs } });
               updated++;
             } else {
+              doc.orgs = [{ orgId: me.activeOrgId, role: 'staff' }];
               await col.insertOne(doc);
               inserted++;
+            }
+          } else {
+            // Tag with activeOrgId
+            doc.orgId = me.activeOrgId;
+            if (name === 'settings' && doc.id.startsWith('branding-')) {
+              doc.id = `branding-${me.activeOrgId}`;
+            }
+
+            if (mode === 'replace') {
+              await col.insertOne(doc);
+              inserted++;
+            } else {
+              // Merge: upsert by id
+              const exists = await col.findOne({ id: doc.id, orgId: me.activeOrgId });
+              if (exists) {
+                const { id: _id1, ...rest } = doc;
+                await col.updateOne({ id: doc.id, orgId: me.activeOrgId }, { $set: rest });
+                updated++;
+              } else {
+                await col.insertOne(doc);
+                inserted++;
+              }
             }
           }
         }
@@ -1969,7 +2246,7 @@ async function handle(request, ctx) {
       return json({ ok: true, mode, summary });
     }
 
-    // POST /api/backup/clear-old-data -> deletes old records as of a selected date
+    // POST /api/backup/clear-old-data -> deletes old records as of a selected date (scoped to active org)
     if (route === 'backup/clear-old-data' && method === 'POST') {
       if (me.role !== 'admin') return json({ error: 'Forbidden — admin only' }, 403);
       const body = await request.json();
@@ -1978,13 +2255,14 @@ async function handle(request, ctx) {
         return json({ error: 'Invalid or missing asOnDate format (expected YYYY-MM-DD)' }, 400);
       }
       const categories = Array.isArray(body.categories) ? body.categories : [];
-      
+
       const endOfIsoDate = `${asOnDate}T23:59:59.999Z`;
       const summary = {};
-      
+
       // 1. Tasks
       if (categories.includes('tasks')) {
         const q = {
+          orgId: me.activeOrgId,
           $or: [
             { createdAt: { $lte: endOfIsoDate } },
             { dueDate: { $ne: '', $lte: asOnDate } }
@@ -1993,10 +2271,11 @@ async function handle(request, ctx) {
         const res = await db.collection('tasks').deleteMany(q);
         summary.tasks = res.deletedCount || 0;
       }
-      
+
       // 2. Leads
       if (categories.includes('leads')) {
         const q = {
+          orgId: me.activeOrgId,
           $or: [
             { createdAt: { $lte: endOfIsoDate } },
             { followUpDate: { $ne: '', $lte: asOnDate } }
@@ -2005,11 +2284,12 @@ async function handle(request, ctx) {
         const res = await db.collection('leads').deleteMany(q);
         summary.leads = res.deletedCount || 0;
       }
-      
+
       // 3. Invoices & Payments
       if (categories.includes('invoices_payments')) {
         // Find invoices to delete first so we can remove their payments
         const invQuery = {
+          orgId: me.activeOrgId,
           $or: [
             { createdAt: { $lte: endOfIsoDate } },
             { invoiceDate: { $lte: asOnDate } },
@@ -2018,33 +2298,35 @@ async function handle(request, ctx) {
         };
         const invoicesToDelete = await db.collection('invoices').find(invQuery).project({ id: 1 }).toArray();
         const invoiceIds = invoicesToDelete.map(i => i.id).filter(Boolean);
-        
+
         // Delete invoices
         const resInv = await db.collection('invoices').deleteMany(invQuery);
-        
+
         // Delete payments linked to those deleted invoices
-        const payQueryLinked = { invoiceId: { $in: invoiceIds } };
+        const payQueryLinked = { orgId: me.activeOrgId, invoiceId: { $in: invoiceIds } };
         // Delete payments directly based on payment date
         const payQueryDirect = {
+          orgId: me.activeOrgId,
           $or: [
             { createdAt: { $lte: endOfIsoDate } },
             { date: { $lte: asOnDate } }
           ]
         };
-        
+
         const resPayLinked = await db.collection('payments').deleteMany(payQueryLinked);
         const resPayDirect = await db.collection('payments').deleteMany({
           ...payQueryDirect,
           invoiceId: { $nin: invoiceIds }
         });
-        
+
         summary.invoices = resInv.deletedCount || 0;
         summary.payments = (resPayLinked.deletedCount || 0) + (resPayDirect.deletedCount || 0);
       }
-      
+
       // 4. Quotations
       if (categories.includes('quotations')) {
         const q = {
+          orgId: me.activeOrgId,
           $or: [
             { createdAt: { $lte: endOfIsoDate } },
             { quotationDate: { $lte: asOnDate } }
@@ -2053,17 +2335,17 @@ async function handle(request, ctx) {
         const res = await db.collection('quotations').deleteMany(q);
         summary.quotations = res.deletedCount || 0;
       }
-      
+
       // 5. Activity Logs
       if (categories.includes('activity_logs')) {
-        const q = { createdAt: { $lte: endOfIsoDate } };
+        const q = { orgId: me.activeOrgId, createdAt: { $lte: endOfIsoDate } };
         const res = await db.collection('activity_logs').deleteMany(q);
         summary.activity_logs = res.deletedCount || 0;
       }
-      
+
       // 6. Compliances
       if (categories.includes('compliances')) {
-        const q = { createdAt: { $lte: endOfIsoDate } };
+        const q = { orgId: me.activeOrgId, createdAt: { $lte: endOfIsoDate } };
         const res = await db.collection('compliances').deleteMany(q);
         summary.compliances = res.deletedCount || 0;
       }
@@ -2096,19 +2378,24 @@ async function handle(request, ctx) {
         const formatter = new Intl.DateTimeFormat('en-CA', options);
         const yesterdayStr = formatter.format(yesterdayObj);
 
+        const orgIds = (user.orgs || []).map(o => o.orgId);
+
         // Fetch tasks
         const completedYesterdayTasks = await db.collection('tasks').find({
+          orgId: { $in: orgIds },
           $or: [{ assignedTo: userId }, { assignees: userId }],
           status: 'Completed',
           updatedAt: { $regex: '^' + yesterdayStr }
         }).toArray();
 
         const assignedYesterdayTasks = await db.collection('tasks').find({
+          orgId: { $in: orgIds },
           $or: [{ assignedTo: userId }, { assignees: userId }],
           createdAt: { $regex: '^' + yesterdayStr }
         }).toArray();
 
         const pendingTasks = await db.collection('tasks').find({
+          orgId: { $in: orgIds },
           $or: [{ assignedTo: userId }, { assignees: userId }],
           status: { $ne: 'Completed' }
         }).sort({ dueDate: 1 }).toArray();
@@ -2161,6 +2448,10 @@ async function handle(request, ctx) {
         return json({ error: 'No recipient phone number provided or found' }, 400);
       }
 
+      if (targetUser) {
+        targetUser.activeOrgId = me.activeOrgId;
+      }
+
       const testTemplate = templateName || 'task_assigned_notification';
       const testParams = [
         targetUser.name,
@@ -2195,8 +2486,8 @@ async function handle(request, ctx) {
     if (route === 'whatsapp/logs' && method === 'GET') {
       if (me.role === 'staff') return json({ error: 'Forbidden' }, 403);
       const { page, limit } = getPaginationParams(url.searchParams);
-      const total = await db.collection('whatsapp_notifications').countDocuments({});
-      const data = await db.collection('whatsapp_notifications').find({})
+      const total = await db.collection('whatsapp_notifications').countDocuments({ orgId: me.activeOrgId });
+      const data = await db.collection('whatsapp_notifications').find({ orgId: me.activeOrgId })
         .sort({ createdAt: -1 })
         .skip((page - 1) * limit)
         .limit(limit)

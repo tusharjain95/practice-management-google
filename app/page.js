@@ -42,12 +42,14 @@ const ROLES = ['admin', 'manager', 'staff'];
 
 function useApi() {
   const tokenRef = () => (typeof window !== 'undefined' ? localStorage.getItem('ca_token') : null);
+  const activeOrgRef = () => (typeof window !== 'undefined' ? localStorage.getItem('ca_active_org_id') : null);
   async function call(path, opts = {}) {
     const res = await fetch(`/api/${path}`, {
       ...opts,
       headers: {
         'Content-Type': 'application/json',
         ...(tokenRef() ? { Authorization: `Bearer ${tokenRef()}` } : {}),
+        ...(activeOrgRef() ? { 'x-org-id': activeOrgRef() } : {}),
         ...(opts.headers || {}),
       },
       body: opts.body && typeof opts.body !== 'string' ? JSON.stringify(opts.body) : opts.body,
@@ -245,7 +247,27 @@ function App() {
     const token = localStorage.getItem('ca_token');
     const stored = localStorage.getItem('ca_user');
     if (token && stored) {
-      try { setUser(JSON.parse(stored)); } catch {}
+      try {
+        setUser(JSON.parse(stored));
+        // Async update user from server to synchronize active org & role
+        fetch('/api/auth/me', {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            ...(localStorage.getItem('ca_active_org_id') ? { 'x-org-id': localStorage.getItem('ca_active_org_id') } : {}),
+          }
+        })
+        .then(res => res.json())
+        .then(data => {
+          if (data.user) {
+            localStorage.setItem('ca_user', JSON.stringify(data.user));
+            setUser(data.user);
+            if (data.user.activeOrgId) {
+              localStorage.setItem('ca_active_org_id', data.user.activeOrgId);
+            }
+          }
+        })
+        .catch(() => {});
+      } catch {}
     }
     setBooting(false);
   }, []);
@@ -254,6 +276,23 @@ function App() {
     localStorage.setItem('ca_token', token);
     localStorage.setItem('ca_user', JSON.stringify(u));
     setUser(u);
+    // Fetch fresh user profile with organizations and activeOrgId immediately
+    fetch('/api/auth/me', {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+      }
+    })
+    .then(res => res.json())
+    .then(data => {
+      if (data.user) {
+        localStorage.setItem('ca_user', JSON.stringify(data.user));
+        setUser(data.user);
+        if (data.user.activeOrgId) {
+          localStorage.setItem('ca_active_org_id', data.user.activeOrgId);
+        }
+      }
+    })
+    .catch(() => {});
   }
   function logout() {
     localStorage.removeItem('ca_token');
@@ -362,6 +401,96 @@ function Login({ onLogin }) {
 function Shell({ user, onUserUpdated, view, viewParams, setView, onLogout }) {
   const [profileOpen, setProfileOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  
+  const { call } = useApi();
+  const [organisations, setOrganisations] = useState([]);
+  const [createOrgOpen, setCreateOrgOpen] = useState(false);
+  const [newOrgName, setNewOrgName] = useState('');
+  const [creatingOrg, setCreatingOrg] = useState(false);
+  const [editOrgOpen, setEditOrgOpen] = useState(false);
+  const [editOrgName, setEditOrgName] = useState('');
+  const [editingOrg, setEditingOrg] = useState(false);
+
+  async function loadOrganisations() {
+    try {
+      const data = await call('organisations');
+      if (data.organisations) {
+        setOrganisations(data.organisations);
+      }
+    } catch (e) {
+      console.error('Failed to load organizations:', e);
+    }
+  }
+
+  useEffect(() => {
+    loadOrganisations();
+  }, [user.activeOrgId]);
+
+  const activeOrgName = useMemo(() => {
+    const active = organisations.find(o => o.id === user.activeOrgId);
+    return active ? active.name : 'Default Org';
+  }, [organisations, user.activeOrgId]);
+
+  async function handleSwitchOrg(orgId) {
+    localStorage.setItem('ca_active_org_id', orgId);
+    toast.success('Switching organization...');
+    try {
+      const data = await call('auth/me');
+      if (data.user) {
+        localStorage.setItem('ca_user', JSON.stringify(data.user));
+        onUserUpdated(data.user);
+        setView('dashboard');
+      }
+    } catch (e) {
+      toast.error('Failed to switch organization');
+    }
+  }
+
+  async function handleCreateOrg(e) {
+    e.preventDefault();
+    if (!newOrgName.trim()) return;
+    setCreatingOrg(true);
+    try {
+      const data = await call('organisations', {
+        method: 'POST',
+        body: { name: newOrgName.trim() }
+      });
+      if (data.ok) {
+        toast.success('Organization created successfully');
+        setNewOrgName('');
+        setCreateOrgOpen(false);
+        if (data.organisation && data.organisation.id) {
+          await handleSwitchOrg(data.organisation.id);
+        }
+      }
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setCreatingOrg(false);
+    }
+  }
+
+  async function handleEditOrg(e) {
+    e.preventDefault();
+    if (!editOrgName.trim()) return;
+    setEditingOrg(true);
+    try {
+      const data = await call(`organisations/${user.activeOrgId}`, {
+        method: 'PUT',
+        body: { name: editOrgName.trim() }
+      });
+      if (data.ok) {
+        toast.success('Organization updated successfully');
+        setEditOrgOpen(false);
+        await loadOrganisations();
+      }
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setEditingOrg(false);
+    }
+  }
+
   const navItems = useMemo(() => {
     const all = [
       { key: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, perm: 'dashboard' },
@@ -427,6 +556,51 @@ function Shell({ user, onUserUpdated, view, viewParams, setView, onLogout }) {
             <X className="w-5 h-5" />
           </button>
         </div>
+
+        {/* Organization Switcher */}
+        <div className="px-4 py-3 border-b border-slate-800 bg-slate-950/40">
+          <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block mb-1.5">
+            Active Organization
+          </label>
+          <div className="flex items-center gap-1.5 min-w-0">
+            <select
+              value={user.activeOrgId || ''}
+              onChange={(e) => handleSwitchOrg(e.target.value)}
+              className="flex-1 min-w-0 bg-slate-800 text-slate-200 text-xs rounded border border-slate-700 px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer truncate"
+            >
+              {organisations.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.name} {o.role === 'admin' ? ' (Admin)' : ''}
+                </option>
+              ))}
+            </select>
+            {user.role === 'admin' && (
+              <Button
+                variant="outline"
+                size="icon"
+                className="w-8 h-8 rounded border-slate-700 text-slate-400 hover:text-white hover:bg-slate-800 bg-transparent shrink-0 cursor-pointer p-0 flex items-center justify-center"
+                onClick={() => {
+                  const active = organisations.find(o => o.id === user.activeOrgId);
+                  setEditOrgName(active ? active.name : '');
+                  setEditOrgOpen(true);
+                }}
+                title="Edit Organization Name"
+              >
+                <Edit className="w-4 h-4" />
+              </Button>
+            )}
+            <Button
+              variant="outline"
+              size="icon"
+              className="w-8 h-8 rounded border-slate-700 text-slate-400 hover:text-white hover:bg-slate-800 bg-transparent shrink-0 cursor-pointer p-0 flex items-center justify-center"
+              onClick={() => setCreateOrgOpen(true)}
+              title="Create New Organization"
+            >
+              <Plus className="w-4 h-4" />
+            </Button>
+          </div>
+        </div>
+
         <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
           {navItems.map(item => (
             <button
@@ -456,7 +630,7 @@ function Shell({ user, onUserUpdated, view, viewParams, setView, onLogout }) {
       </aside>
 
       <main className="flex-1 overflow-auto min-w-0">
-        <TopBar user={user} setView={setView} onMenuClick={() => setSidebarOpen(true)} />
+        <TopBar user={user} setView={setView} onMenuClick={() => setSidebarOpen(true)} activeOrgName={activeOrgName} />
         <div className="p-3 sm:p-4 md:p-6 max-w-[1400px] mx-auto">
           {view === 'dashboard' && <Dashboard user={user} setView={setView} />}
           {view === 'calendar' && <CalendarView user={user} setView={setView} />}
@@ -465,7 +639,7 @@ function Shell({ user, onUserUpdated, view, viewParams, setView, onLogout }) {
           {view === 'clients' && <ClientsView user={user} setView={setView} viewParams={viewParams} />}
           {view === 'invoices' && <InvoicesView user={user} viewParams={viewParams} setView={setView} />}
           {view === 'receivables' && <ReceivablesView user={user} setView={setView} />}
-          {view === 'quotations' && <Quotations user={user} viewParams={viewParams} />}
+          {view === 'quotations' && <Quotations user={user} viewParams={viewParams} setView={setView} />}
           {view === 'users' && <UsersView user={user} />}
           {view === 'branding' && <BrandingView user={user} />}
           {view === 'compliances' && <CompliancesView user={user} />}
@@ -473,6 +647,73 @@ function Shell({ user, onUserUpdated, view, viewParams, setView, onLogout }) {
         </div>
       </main>
       {profileOpen && <MyProfileDialog user={user} onUserUpdated={onUserUpdated} onClose={() => setProfileOpen(false)} />}
+      {createOrgOpen && (
+        <Dialog open={createOrgOpen} onOpenChange={setCreateOrgOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Create New Organization</DialogTitle>
+              <DialogDescription>
+                Create a separate organization to manage different branches, clients, and teams.
+              </DialogDescription>
+            </DialogHeader>
+            <form onSubmit={handleCreateOrg}>
+              <div className="space-y-4 py-4">
+                <div className="space-y-2">
+                  <Label htmlFor="org-name">Organization Name</Label>
+                  <Input
+                    id="org-name"
+                    placeholder="e.g. West Coast Branch, CA Firm LLP"
+                    value={newOrgName}
+                    onChange={(e) => setNewOrgName(e.target.value)}
+                    required
+                  />
+                </div>
+              </div>
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setCreateOrgOpen(false)}>
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={creatingOrg}>
+                  {creatingOrg ? 'Creating...' : 'Create Organization'}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+      )}
+      {editOrgOpen && (
+        <Dialog open={editOrgOpen} onOpenChange={setEditOrgOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Edit Organization</DialogTitle>
+              <DialogDescription>
+                Change the name of your organization.
+              </DialogDescription>
+            </DialogHeader>
+            <form onSubmit={handleEditOrg}>
+              <div className="space-y-4 py-4">
+                <div className="space-y-2">
+                  <Label htmlFor="edit-org-name">Organization Name</Label>
+                  <Input
+                    id="edit-org-name"
+                    value={editOrgName}
+                    onChange={(e) => setEditOrgName(e.target.value)}
+                    required
+                  />
+                </div>
+              </div>
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setEditOrgOpen(false)}>
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={editingOrg}>
+                  {editingOrg ? 'Saving...' : 'Save Changes'}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   );
 }
@@ -554,7 +795,7 @@ function MyProfileDialog({ user, onUserUpdated, onClose }) {
   );
 }
 
-function TopBar({ user, setView, onMenuClick }) {
+function TopBar({ user, setView, onMenuClick, activeOrgName }) {
   const { call } = useApi();
   const [q, setQ] = useState('');
   const [results, setResults] = useState(null);
@@ -614,7 +855,15 @@ function TopBar({ user, setView, onMenuClick }) {
             </div>
           )}
         </div>
-        <RemindersBell user={user} setView={setView} />
+        <div className="flex items-center gap-3">
+          {activeOrgName && (
+            <Badge variant="outline" className="hidden sm:flex items-center gap-1.5 px-3 py-1 bg-slate-50 border-slate-200 text-slate-700 font-medium text-xs rounded-full">
+              <Building2 className="w-3.5 h-3.5 text-indigo-500" />
+              {activeOrgName}
+            </Badge>
+          )}
+          <RemindersBell user={user} setView={setView} />
+        </div>
       </div>
     </div>
   );
@@ -1341,7 +1590,7 @@ function Leads({ user, viewParams = {}, setView }) {
 
       {open && (<LeadForm users={users} initial={editing} currentUser={user} onClose={() => setOpen(false)} onSaved={() => { setOpen(false); load(); }} />)}
       {convertOpen && (<ConvertLeadDialog lead={convertOpen} users={users} onClose={() => setConvertOpen(null)} onDone={() => { setConvertOpen(null); load(); }} />)}
-      {detail && (<LeadDetail lead={detail} users={users} onClose={() => setDetail(null)} onChanged={async () => { const d = await call('leads'); const f = d.leads.find(x => x.id === detail.id); if (f) setDetail(f); load(); }} canEdit={canEditLead(detail)} />)}
+      {detail && (<LeadDetail lead={detail} users={users} onClose={() => { setDetail(null); setView('leads', {}); }} onChanged={async () => { const d = await call('leads'); const f = d.leads.find(x => x.id === detail.id); if (f) setDetail(f); load(); }} canEdit={canEditLead(detail)} />)}
     </div>
   );
 }
@@ -1881,7 +2130,7 @@ function Tasks({ user, viewParams = {}, setView }) {
         </CardContent>
       </Card>
       {open && (<TaskForm users={users} initial={editing} currentUser={user} onClose={() => setOpen(false)} onSaved={() => { setOpen(false); load(); }} />)}
-      {detail && (<TaskDetail task={detail} users={users} currentUser={user} onClose={() => setDetail(null)} onChanged={async () => { const d = await call('tasks'); const f = d.tasks.find(x => x.id === detail.id); if (f) setDetail(f); load(); }} />)}
+      {detail && (<TaskDetail task={detail} users={users} currentUser={user} onClose={() => { setDetail(null); setView('tasks', {}); }} onChanged={async () => { const d = await call('tasks'); const f = d.tasks.find(x => x.id === detail.id); if (f) setDetail(f); load(); }} />)}
     </div>
   );
 }
@@ -2126,7 +2375,7 @@ function TaskDetail({ task, users, currentUser, onClose, onChanged }) {
   );
 }
 
-function Quotations({ user, viewParams = {} }) {
+function Quotations({ user, viewParams = {}, setView }) {
   const { call } = useApi();
   const [items, setItems] = useState([]);
   const [branding, setBranding] = useState({});
@@ -2267,7 +2516,7 @@ function Quotations({ user, viewParams = {} }) {
           />
         </CardContent>
       </Card>
-      {open && <QuotationForm initial={editing} onClose={() => { setOpen(false); setEditing(null); }} onSaved={(q) => { setOpen(false); setEditing(null); load(); generateQuotationPDF(q, branding); }} />}
+      {open && <QuotationForm initial={editing} onClose={() => { setOpen(false); setEditing(null); setView('quotations', {}); }} onSaved={(q) => { setOpen(false); setEditing(null); setView('quotations', {}); load(); generateQuotationPDF(q, branding); }} />}
     </div>
   );
 }
@@ -2421,6 +2670,7 @@ function UsersView({ user }) {
   const [editing, setEditing] = useState(null);
   const [resetUser, setResetUser] = useState(null);
   const [permUser, setPermUser] = useState(null);
+  const [orgAccessUser, setOrgAccessUser] = useState(null);
   const [sortField, setSortField] = useState('name');
   const [sortOrder, setSortOrder] = useState('asc');
 
@@ -2492,6 +2742,9 @@ function UsersView({ user }) {
                       {u.role !== 'admin' && (
                         <Button size="sm" variant="ghost" onClick={() => setPermUser(u)} title="Module access"><ShieldCheck className="w-4 h-4 text-indigo-600" /></Button>
                       )}
+                      {u.id !== user.id && (
+                        <Button size="sm" variant="ghost" onClick={() => setOrgAccessUser(u)} title="Organization access"><Building2 className="w-4 h-4 text-emerald-600" /></Button>
+                      )}
                       <Button size="sm" variant="ghost" onClick={() => setResetUser(u)} title="Reset password"><KeyRound className="w-4 h-4 text-amber-600" /></Button>
                       <Button size="sm" variant="ghost" onClick={() => { setEditing(u); setOpen(true); }}><Edit className="w-4 h-4" /></Button>
                       {u.id !== user.id && (<Button size="sm" variant="ghost" onClick={() => del(u.id)}><Trash2 className="w-4 h-4 text-red-500" /></Button>)}
@@ -2506,6 +2759,7 @@ function UsersView({ user }) {
       {open && <UserForm initial={editing} onClose={() => setOpen(false)} onSaved={() => { setOpen(false); load(); }} />}
       {resetUser && <AdminResetPasswordDialog target={resetUser} onClose={() => setResetUser(null)} />}
       {permUser && <PermissionsDialog target={permUser} onClose={() => { setPermUser(null); load(); }} />}
+      {orgAccessUser && <OrgAccessDialog target={orgAccessUser} onClose={() => { setOrgAccessUser(null); load(); }} />}
     </div>
   );
 }
@@ -2934,7 +3188,7 @@ function ClientsView({ user, setView, viewParams = {} }) {
         </CardContent>
       </Card>
       {open && <ClientForm initial={editing} onClose={() => setOpen(false)} onSaved={() => { setOpen(false); load(); }} />}
-      {ledgerId && <ClientLedger clientId={ledgerId} onClose={() => { setLedgerId(null); load(); }} user={user} />}
+      {ledgerId && <ClientLedger clientId={ledgerId} onClose={() => { setLedgerId(null); setView('clients', {}); load(); }} user={user} />}
       {importOpen && <ClientImportDialog onClose={() => setImportOpen(false)} onImported={() => { setImportOpen(false); load(); }} />}
     </div>
   );
@@ -3423,7 +3677,7 @@ function InvoicesView({ user, viewParams = {}, setView }) {
         </CardContent>
       </Card>
       {open && <InvoiceForm clients={clients} branding={branding} onClose={() => setOpen(false)} onSaved={(inv) => { setOpen(false); load(); generateInvoicePDF(inv, branding); }} />}
-      {payOpen && <PaymentForm clientId={payOpen.clientId} client={{ name: payOpen.clientName }} invoices={[payOpen]} onClose={() => setPayOpen(null)} onSaved={() => { setPayOpen(null); load(); }} />}
+      {payOpen && <PaymentForm clientId={payOpen.clientId} client={{ name: payOpen.clientName }} invoices={[payOpen]} onClose={() => { setPayOpen(null); setView('invoices', {}); }} onSaved={() => { setPayOpen(null); setView('invoices', {}); load(); }} />}
     </div>
   );
 }
@@ -3892,6 +4146,98 @@ function PermissionsDialog({ target, onClose }) {
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
           <Button onClick={save} disabled={saving}>{saving ? 'Saving...' : 'Save Permissions'}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function OrgAccessDialog({ target, onClose }) {
+  const { call } = useApi();
+  const [organisations, setOrganisations] = useState([]);
+  const [allowedOrgIds, setAllowedOrgIds] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  async function loadData() {
+    try {
+      const orgData = await call('organisations?all=true');
+      if (orgData.organisations) {
+        setOrganisations(orgData.organisations);
+      }
+      const userOrgs = target.orgs || [];
+      setAllowedOrgIds(userOrgs.map(o => o.orgId));
+    } catch (e) {
+      toast.error(e.message || 'Failed to load organization data');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      await call(`users/${target.id}`, {
+        method: 'PUT',
+        body: { allowedOrgIds }
+      });
+      toast.success('Organization access updated successfully');
+      onClose();
+    } catch (e) {
+      toast.error(e.message || 'Failed to update access');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function toggleOrg(orgId) {
+    if (allowedOrgIds.includes(orgId)) {
+      setAllowedOrgIds(allowedOrgIds.filter(id => id !== orgId));
+    } else {
+      setAllowedOrgIds([...allowedOrgIds, orgId]);
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent className="max-w-md w-[95vw] max-h-[90vh] overflow-y-auto p-4 sm:p-6">
+        <DialogHeader>
+          <DialogTitle>Organization Access — {target.name}</DialogTitle>
+          <DialogDescription>
+            Enable or disable this user&apos;s access to different organizations in the system.
+          </DialogDescription>
+        </DialogHeader>
+        {loading ? (
+          <div className="py-8 text-center text-slate-500 text-sm">Loading organizations...</div>
+        ) : (
+          <div className="space-y-3 py-2">
+            {organisations.length === 0 ? (
+              <div className="text-center text-slate-500 py-4 text-xs">No organizations found.</div>
+            ) : (
+              organisations.map(org => {
+                const isEnabled = allowedOrgIds.includes(org.id);
+                return (
+                  <label key={org.id} className="flex items-center justify-between border rounded-md p-3 cursor-pointer hover:bg-slate-50 transition-colors">
+                    <div className="flex flex-col">
+                      <span className="text-sm font-semibold text-slate-700">{org.name}</span>
+                      <span className="text-[10px] text-slate-400">ID: {org.id}</span>
+                    </div>
+                    <Switch checked={isEnabled} onCheckedChange={() => toggleOrg(org.id)} />
+                  </label>
+                );
+              })
+            )}
+          </div>
+        )}
+        <DialogFooter className="pt-2">
+          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button onClick={handleSave} disabled={loading || saving}>
+            {saving ? 'Saving...' : 'Save Access'}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
