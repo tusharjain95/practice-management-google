@@ -189,6 +189,47 @@ function SortableHeader({ label, field, currentField, currentOrder, onSort, clas
   );
 }
 
+function Pagination({ currentPage, totalItems, limit, onPageChange, className = '' }) {
+  const totalPages = Math.ceil(totalItems / limit) || 1;
+  const canPrev = currentPage > 1;
+  const canNext = currentPage < totalPages;
+
+  return (
+    <div className={`flex items-center justify-between px-4 py-3 border-t border-slate-100 bg-white ${className}`}>
+      <div className="text-sm text-slate-500">
+        Showing <span className="font-medium">{totalItems === 0 ? 0 : (currentPage - 1) * limit + 1}</span> to{' '}
+        <span className="font-medium">{Math.min(currentPage * limit, totalItems)}</span> of{' '}
+        <span className="font-medium">{totalItems}</span> results
+      </div>
+      <div className="flex items-center gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => onPageChange(currentPage - 1)}
+          disabled={!canPrev}
+          className="h-8 px-2"
+        >
+          <ChevronLeft className="h-4 w-4 mr-1" />
+          Previous
+        </Button>
+        <span className="text-sm font-medium text-slate-700 px-1">
+          Page {currentPage} of {totalPages}
+        </span>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => onPageChange(currentPage + 1)}
+          disabled={!canNext}
+          className="h-8 px-2"
+        >
+          Next
+          <ChevronRight className="h-4 w-4 ml-1" />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [user, setUser] = useState(null);
   const [booting, setBooting] = useState(true);
@@ -1000,6 +1041,9 @@ function Leads({ user, viewParams = {}, setView }) {
   const [convertOpen, setConvertOpen] = useState(null);
   const [detail, setDetail] = useState(null);
 
+  const [page, setPage] = useState(1);
+  const [totalItems, setTotalItems] = useState(0);
+
   const [sortField, setSortField] = useState('createdAt');
   const [sortOrder, setSortOrder] = useState('desc');
 
@@ -1016,19 +1060,43 @@ function Leads({ user, viewParams = {}, setView }) {
   function canEditLead(l) { return user.role !== 'staff' || l.assignedTo === user.id; }
   function canDeleteLead() { return user.role !== 'staff'; }
 
-  async function load() {
+  async function load(currentPage = page) {
     try {
-      const [l, u] = await Promise.all([call('leads'), call('users')]);
+      let url = `leads?page=${currentPage}&limit=25`;
+      if (statusFilter !== 'all') url += `&status=${statusFilter}`;
+      if (serviceFilter !== 'all') url += `&serviceType=${serviceFilter}`;
+      if (assignedFilter !== 'all') url += `&assignedTo=${assignedFilter}`;
+
+      const [l, u] = await Promise.all([call(url), call('users')]);
       setLeads(l.leads || []);
+      setTotalItems(l.total || 0);
       setUsers(u.users || []);
-      // Auto-open detail if viewParams has openId
+
       if (viewParams.openId) {
-        const f = (l.leads || []).find(x => x.id === viewParams.openId);
-        if (f) setDetail(f);
+        let f = (l.leads || []).find(x => x.id === viewParams.openId);
+        if (f) {
+          setDetail(f);
+        } else {
+          try {
+            const res = await call(`leads?id=${viewParams.openId}`);
+            if (res.leads && res.leads[0]) {
+              setDetail(res.leads[0]);
+            }
+          } catch {}
+        }
       }
     } catch (e) { toast.error(e.message); }
   }
-  useEffect(() => { load(); }, []);
+
+  // Reset page when filters change
+  useEffect(() => {
+    setPage(1);
+  }, [statusFilter, serviceFilter, assignedFilter]);
+
+  // Load data when page, filters, or openId changes
+  useEffect(() => {
+    load(page);
+  }, [page, statusFilter, serviceFilter, assignedFilter, viewParams.openId]);
   useEffect(() => {
     if (viewParams.status) setStatusFilter(viewParams.status);
     if (viewParams.serviceType) setServiceFilter(viewParams.serviceType);
@@ -1104,7 +1172,7 @@ function Leads({ user, viewParams = {}, setView }) {
     <div className="space-y-4">
       <PageHeader
         title="Leads"
-        subtitle={`${filtered.length} of ${leads.length} leads`}
+        subtitle={`${filtered.length} of ${totalItems} leads`}
         action={
           <div className="flex gap-2">
             <Button variant="outline" onClick={doExport}><FileSpreadsheet className="w-4 h-4 mr-2" />Export Excel</Button>
@@ -1261,6 +1329,13 @@ function Leads({ user, viewParams = {}, setView }) {
               )}
             </TableBody>
           </Table>
+          <Pagination
+            currentPage={page}
+            totalItems={totalItems}
+            limit={25}
+            onPageChange={(p) => setPage(p)}
+            className="-mx-6 -mb-6 mt-4 border-t"
+          />
         </CardContent>
       </Card>
 
@@ -1466,6 +1541,9 @@ function Tasks({ user, viewParams = {}, setView }) {
   const [editing, setEditing] = useState(null);
   const [detail, setDetail] = useState(null);
 
+  const [page, setPage] = useState(1);
+  const [totalItems, setTotalItems] = useState(0);
+
   const [sortField, setSortField] = useState('createdAt');
   const [sortOrder, setSortOrder] = useState('desc');
 
@@ -1487,18 +1565,45 @@ function Tasks({ user, viewParams = {}, setView }) {
   }
   function canDeleteTask() { return canEditAny; }
 
-  async function load() {
+  async function load(currentPage = page) {
     try {
-      const [t, u] = await Promise.all([call('tasks'), call('users')]);
+      let url = `tasks?page=${currentPage}&limit=25`;
+      if (statusFilter !== 'all') url += `&status=${statusFilter}`;
+      if (priorityFilter !== 'all') url += `&priority=${priorityFilter}`;
+      if (categoryFilter !== 'all') url += `&category=${categoryFilter}`;
+      if (assignedFilter !== 'all') url += `&assignedTo=${assignedFilter}`;
+      if (discussionFilter !== 'all') url += `&discussion=${discussionFilter}`;
+
+      const [t, u] = await Promise.all([call(url), call('users')]);
       setTasks(t.tasks || []);
+      setTotalItems(t.total || 0);
       setUsers(u.users || []);
+
       if (viewParams.openId) {
-        const f = (t.tasks || []).find(x => x.id === viewParams.openId);
-        if (f) setDetail(f);
+        let f = (t.tasks || []).find(x => x.id === viewParams.openId);
+        if (f) {
+          setDetail(f);
+        } else {
+          try {
+            const res = await call(`tasks?id=${viewParams.openId}`);
+            if (res.tasks && res.tasks[0]) {
+              setDetail(res.tasks[0]);
+            }
+          } catch {}
+        }
       }
     } catch (e) { toast.error(e.message); }
   }
-  useEffect(() => { load(); }, []);
+
+  // Reset page when filters change
+  useEffect(() => {
+    setPage(1);
+  }, [statusFilter, priorityFilter, categoryFilter, assignedFilter, discussionFilter]);
+
+  // Load data when page, filters, or openId changes
+  useEffect(() => {
+    load(page);
+  }, [page, statusFilter, priorityFilter, categoryFilter, assignedFilter, discussionFilter, viewParams.openId]);
   useEffect(() => {
     if (viewParams.status) setStatusFilter(viewParams.status);
     if (viewParams.priority) setPriorityFilter(viewParams.priority);
@@ -1594,7 +1699,7 @@ function Tasks({ user, viewParams = {}, setView }) {
     <div className="space-y-4">
       <PageHeader
         title="Tasks"
-        subtitle={`${filtered.length} of ${tasks.length} tasks`}
+        subtitle={`${filtered.length} of ${totalItems} tasks`}
         action={
           <div className="flex gap-2">
             <Button variant="outline" onClick={doExport}><FileSpreadsheet className="w-4 h-4 mr-2" />Export Excel</Button>
@@ -1766,6 +1871,13 @@ function Tasks({ user, viewParams = {}, setView }) {
               {!filtered.length && (<TableRow><TableCell colSpan={7} className="text-center text-slate-500 py-8">No tasks found.</TableCell></TableRow>)}
             </TableBody>
           </Table>
+          <Pagination
+            currentPage={page}
+            totalItems={totalItems}
+            limit={25}
+            onPageChange={(p) => setPage(p)}
+            className="-mx-6 -mb-6 mt-4 border-t"
+          />
         </CardContent>
       </Card>
       {open && (<TaskForm users={users} initial={editing} currentUser={user} onClose={() => setOpen(false)} onSaved={() => { setOpen(false); load(); }} />)}
@@ -2023,6 +2135,9 @@ function Quotations({ user, viewParams = {} }) {
   const [sortField, setSortField] = useState('quotationNumber');
   const [sortOrder, setSortOrder] = useState('desc');
 
+  const [page, setPage] = useState(1);
+  const [totalItems, setTotalItems] = useState(0);
+
   function handleSort(field) {
     if (sortField === field) {
       setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
@@ -2053,28 +2168,47 @@ function Quotations({ user, viewParams = {} }) {
       }
     });
   }, [items, sortField, sortOrder]);
-  async function load() {
+
+  async function load(currentPage = page) {
     try {
-      const [d, b] = await Promise.all([call('quotations'), call('branding')]);
+      const [d, b] = await Promise.all([
+        call(`quotations?page=${currentPage}&limit=25`),
+        call('branding')
+      ]);
       setItems(d.quotations || []);
+      setTotalItems(d.total || 0);
       setBranding(b.branding || {});
       if (viewParams.openId) {
-        const f = (d.quotations || []).find(x => x.id === viewParams.openId);
-        if (f) { setEditing(f); setOpen(true); }
+        let f = (d.quotations || []).find(x => x.id === viewParams.openId);
+        if (f) {
+          setEditing(f); setOpen(true);
+        } else {
+          try {
+            const res = await call(`quotations?id=${viewParams.openId}`);
+            if (res.quotations && res.quotations[0]) {
+              setEditing(res.quotations[0]); setOpen(true);
+            }
+          } catch {}
+        }
       }
     } catch (e) { toast.error(e.message); }
   }
-  useEffect(() => { load(); }, []);
+
+  useEffect(() => {
+    load(page);
+  }, [page, viewParams.openId]);
+
   async function deleteQ(id) {
     if (!confirm('Delete quotation?')) return;
     try { await call(`quotations/${id}`, { method: 'DELETE' }); toast.success('Deleted'); load(); }
     catch (e) { toast.error(e.message); }
   }
+
   return (
     <div className="space-y-4">
       <PageHeader
         title="Quotations"
-        subtitle="Generate, edit and download professional PDF quotations"
+        subtitle={`${sortedItems.length} of ${totalItems} quotations • Generate, edit and download professional PDF quotations`}
         action={<Button onClick={() => { setEditing(null); setOpen(true); }}><Plus className="w-4 h-4 mr-2" />New Quotation</Button>}
       />
       <Card>
@@ -2124,6 +2258,13 @@ function Quotations({ user, viewParams = {} }) {
               {!sortedItems.length && (<TableRow><TableCell colSpan={8} className="text-center text-slate-500 py-8">No quotations yet. Create one to generate a PDF.</TableCell></TableRow>)}
             </TableBody>
           </Table>
+          <Pagination
+            currentPage={page}
+            totalItems={totalItems}
+            limit={25}
+            onPageChange={(p) => setPage(p)}
+            className="-mx-6 -mb-6 mt-4 border-t"
+          />
         </CardContent>
       </Card>
       {open && <QuotationForm initial={editing} onClose={() => { setOpen(false); setEditing(null); }} onSaved={(q) => { setOpen(false); setEditing(null); load(); generateQuotationPDF(q, branding); }} />}
@@ -2657,14 +2798,18 @@ function ClientsView({ user, setView, viewParams = {} }) {
   const [ledgerId, setLedgerId] = useState(null);
   const [importOpen, setImportOpen] = useState(false);
 
-  async function load() {
+  const [page, setPage] = useState(1);
+  const [totalItems, setTotalItems] = useState(0);
+
+  async function load(currentPage = page) {
     try {
-      const d = await call('clients');
+      const d = await call(`clients?page=${currentPage}&limit=25`);
       setClients(d.clients || []);
+      setTotalItems(d.total || 0);
       if (viewParams.openId) setLedgerId(viewParams.openId);
     } catch (e) { toast.error(e.message); }
   }
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(page); }, [page, viewParams.openId]);
 
   const [sortField, setSortField] = useState('name');
   const [sortOrder, setSortOrder] = useState('asc');
@@ -2719,7 +2864,7 @@ function ClientsView({ user, setView, viewParams = {} }) {
     <div className="space-y-4">
       <PageHeader
         title="Clients"
-        subtitle={`${filtered.length} clients • Total net due: ₹${totalDue.toLocaleString('en-IN')}`}
+        subtitle={`${filtered.length} of ${totalItems} clients • Total net due: ₹${totalDue.toLocaleString('en-IN')}`}
         action={
           <div className="flex gap-2 flex-wrap">
             <Button variant="outline" onClick={doExport}><FileSpreadsheet className="w-4 h-4 mr-2" />Export</Button>
@@ -2779,6 +2924,13 @@ function ClientsView({ user, setView, viewParams = {} }) {
               {!filtered.length && <TableRow><TableCell colSpan={8} className="text-center text-slate-500 py-8">No clients yet.</TableCell></TableRow>}
             </TableBody>
           </Table>
+          <Pagination
+            currentPage={page}
+            totalItems={totalItems}
+            limit={25}
+            onPageChange={(p) => setPage(p)}
+            className="-mx-6 -mb-6 mt-4 border-t"
+          />
         </CardContent>
       </Card>
       {open && <ClientForm initial={editing} onClose={() => setOpen(false)} onSaved={() => { setOpen(false); load(); }} />}
@@ -3098,17 +3250,43 @@ function InvoicesView({ user, viewParams = {}, setView }) {
   const [payOpen, setPayOpen] = useState(null);
   const [branding, setBranding] = useState({});
 
-  async function load() {
+  const [page, setPage] = useState(1);
+  const [totalItems, setTotalItems] = useState(0);
+
+  async function load(currentPage = page) {
     try {
-      const [i, c, b] = await Promise.all([call('invoices'), call('clients'), call('branding')]);
+      let url = `invoices?page=${currentPage}&limit=25`;
+      if (statusFilter !== 'all') url += `&status=${statusFilter}`;
+
+      const [i, c, b] = await Promise.all([call(url), call('clients'), call('branding')]);
       setInvoices(i.invoices || []); setClients(c.clients || []); setBranding(b.branding || {});
+      setTotalItems(i.total || 0);
+
       if (viewParams.openId) {
-        const f = (i.invoices || []).find(x => x.id === viewParams.openId);
-        if (f && f.status !== 'Paid') setPayOpen(f);
+        let f = (i.invoices || []).find(x => x.id === viewParams.openId);
+        if (f) {
+          if (f.status !== 'Paid') setPayOpen(f);
+        } else {
+          try {
+            const res = await call(`invoices?id=${viewParams.openId}`);
+            if (res.invoices && res.invoices[0]) {
+              if (res.invoices[0].status !== 'Paid') setPayOpen(res.invoices[0]);
+            }
+          } catch {}
+        }
       }
     } catch (e) { toast.error(e.message); }
   }
-  useEffect(() => { load(); }, []);
+
+  // Reset page when filter changes
+  useEffect(() => {
+    setPage(1);
+  }, [statusFilter]);
+
+  // Load when page, statusFilter, or openId changes
+  useEffect(() => {
+    load(page);
+  }, [page, statusFilter, viewParams.openId]);
   useEffect(() => { if (viewParams.status) setStatusFilter(viewParams.status); }, [viewParams.status]);
 
   const [sortField, setSortField] = useState('invoiceNumber');
@@ -3167,7 +3345,7 @@ function InvoicesView({ user, viewParams = {}, setView }) {
     <div className="space-y-4">
       <PageHeader
         title="Invoices"
-        subtitle={`${filtered.length} invoices • Billed: ₹${totalBilled.toLocaleString('en-IN')} • Due: ₹${totalDue.toLocaleString('en-IN')}`}
+        subtitle={`${filtered.length} of ${totalItems} invoices • Billed: ₹${totalBilled.toLocaleString('en-IN')} • Due: ₹${totalDue.toLocaleString('en-IN')}`}
         action={
           <div className="flex gap-2">
             <Button variant="outline" onClick={doExport}><FileSpreadsheet className="w-4 h-4 mr-2" />Export</Button>
@@ -3235,6 +3413,13 @@ function InvoicesView({ user, viewParams = {}, setView }) {
               {!filtered.length && <TableRow><TableCell colSpan={8} className="text-center text-slate-500 py-8">No invoices yet.</TableCell></TableRow>}
             </TableBody>
           </Table>
+          <Pagination
+            currentPage={page}
+            totalItems={totalItems}
+            limit={25}
+            onPageChange={(p) => setPage(p)}
+            className="-mx-6 -mb-6 mt-4 border-t"
+          />
         </CardContent>
       </Card>
       {open && <InvoiceForm clients={clients} branding={branding} onClose={() => setOpen(false)} onSaved={(inv) => { setOpen(false); load(); generateInvoicePDF(inv, branding); }} />}

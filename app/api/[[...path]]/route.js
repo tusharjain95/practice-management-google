@@ -582,12 +582,17 @@ async function handle(request, ctx) {
     if (route === 'leads' && method === 'GET') {
       const filter = {};
       if (me.role === 'staff') filter.assignedTo = me.id;
-      const status = url.searchParams.get('status');
-      const assignedTo = url.searchParams.get('assignedTo');
-      const serviceType = url.searchParams.get('serviceType');
-      if (status) filter.status = status;
-      if (assignedTo) filter.assignedTo = assignedTo;
-      if (serviceType) filter.serviceType = serviceType;
+      const id = url.searchParams.get('id');
+      if (id) {
+        filter.id = id;
+      } else {
+        const status = url.searchParams.get('status');
+        const assignedTo = url.searchParams.get('assignedTo');
+        const serviceType = url.searchParams.get('serviceType');
+        if (status) filter.status = status;
+        if (assignedTo) filter.assignedTo = assignedTo;
+        if (serviceType) filter.serviceType = serviceType;
+      }
 
       const { page, limit } = getPaginationParams(url.searchParams);
       const total = await db.collection('leads').countDocuments(filter);
@@ -701,17 +706,22 @@ async function handle(request, ctx) {
           { needsDiscussion: true, discussionWith: me.id },
         ];
       }
-      const status = url.searchParams.get('status');
-      const assignedTo = url.searchParams.get('assignedTo');
-      const priority = url.searchParams.get('priority');
-      const category = url.searchParams.get('category');
-      const discussion = url.searchParams.get('discussion');
-      if (status) filter.status = status;
-      if (assignedTo) filter.$or = [{ assignedTo }, { assignees: assignedTo }];
-      if (priority) filter.priority = priority;
-      if (category) filter.category = category;
-      if (discussion === 'me') { filter.needsDiscussion = true; filter.discussionWith = me.id; }
-      else if (discussion === 'true') filter.needsDiscussion = true;
+      const id = url.searchParams.get('id');
+      if (id) {
+        filter.id = id;
+      } else {
+        const status = url.searchParams.get('status');
+        const assignedTo = url.searchParams.get('assignedTo');
+        const priority = url.searchParams.get('priority');
+        const category = url.searchParams.get('category');
+        const discussion = url.searchParams.get('discussion');
+        if (status) filter.status = status;
+        if (assignedTo) filter.$or = [{ assignedTo }, { assignees: assignedTo }];
+        if (priority) filter.priority = priority;
+        if (category) filter.category = category;
+        if (discussion === 'me') { filter.needsDiscussion = true; filter.discussionWith = me.id; }
+        else if (discussion === 'true') filter.needsDiscussion = true;
+      }
 
       const { page, limit } = getPaginationParams(url.searchParams);
       const total = await db.collection('tasks').countDocuments(filter);
@@ -942,6 +952,8 @@ async function handle(request, ctx) {
     // -------- QUOTATIONS --------
     if (route === 'quotations' && method === 'GET') {
       const filter = me.role === 'staff' ? { createdBy: me.id } : {};
+      const id = url.searchParams.get('id');
+      if (id) filter.id = id;
 
       const { page, limit } = getPaginationParams(url.searchParams);
       const total = await db.collection('quotations').countDocuments(filter);
@@ -1045,12 +1057,17 @@ async function handle(request, ctx) {
       let enriched = [];
       let total = 0;
 
+      const filter = {};
+      const id = url.searchParams.get('id');
+      if (id) filter.id = id;
+
       // Check if real MongoDB (has aggregate function)
       if (typeof db.collection('clients').aggregate === 'function') {
-        const countRes = await db.collection('clients').countDocuments({});
+        const countRes = await db.collection('clients').countDocuments(filter);
         total = countRes;
 
         const pipeline = [
+          { $match: filter },
           { $sort: { createdAt: -1 } },
           { $skip: skip },
           { $limit: limit },
@@ -1115,7 +1132,7 @@ async function handle(request, ctx) {
         enriched = await db.collection('clients').aggregate(pipeline).toArray();
       } else {
         // Fallback for mock DB
-        const clients = await db.collection('clients').find({}).project({ _id: 0 }).sort({ createdAt: -1 }).toArray();
+        const clients = await db.collection('clients').find(filter).project({ _id: 0 }).sort({ createdAt: -1 }).toArray();
         total = clients.length;
         const pageClients = clients.slice(skip, skip + limit);
         for (const c of pageClients) {
@@ -1320,10 +1337,15 @@ async function handle(request, ctx) {
     // -------- INVOICES --------
     if (route === 'invoices' && method === 'GET') {
       const filter = {};
-      const clientId = url.searchParams.get('clientId');
-      const status = url.searchParams.get('status');
-      if (clientId) filter.clientId = clientId;
-      if (status) filter.status = status;
+      const id = url.searchParams.get('id');
+      if (id) {
+        filter.id = id;
+      } else {
+        const clientId = url.searchParams.get('clientId');
+        const status = url.searchParams.get('status');
+        if (clientId) filter.clientId = clientId;
+        if (status) filter.status = status;
+      }
 
       const { page, limit } = getPaginationParams(url.searchParams);
       const total = await db.collection('invoices').countDocuments(filter);
