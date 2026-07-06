@@ -986,7 +986,17 @@ async function handle(request, ctx) {
         const priority = url.searchParams.get('priority');
         const category = url.searchParams.get('category');
         const discussion = url.searchParams.get('discussion');
-        if (status) filter.status = status;
+        if (status) {
+          if (status === 'action') {
+            filter.status = { $ne: 'Completed' };
+          } else if (status === 'overdue') {
+            const todayStr = new Date().toISOString().slice(0, 10);
+            filter.status = { $ne: 'Completed' };
+            filter.dueDate = { $ne: '', $lt: todayStr };
+          } else {
+            filter.status = status;
+          }
+        }
         if (assignedTo) {
           if (filter.$and) {
             filter.$and.push({ $or: [{ assignedTo }, { assignees: assignedTo }] });

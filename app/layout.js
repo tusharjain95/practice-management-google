@@ -43,28 +43,7 @@ export default function RootLayout({ children }) {
       <body className="antialiased">
         {children}
         <Toaster richColors position="top-right" />
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `
-              if ('serviceWorker' in navigator) {
-                var registerSW = function() {
-                  navigator.serviceWorker.register('/sw.js', { scope: '/' })
-                    .then(function(reg) {
-                      console.log('ServiceWorker registration successful with scope: ', reg.scope);
-                    })
-                    .catch(function(err) {
-                      console.log('ServiceWorker registration failed: ', err);
-                    });
-                };
-                if (document.readyState === 'complete' || document.readyState === 'interactive') {
-                  registerSW();
-                } else {
-                  window.addEventListener('load', registerSW);
-                }
-              }
-            `,
-          }}
-        />
+
       </body>
     </html>
   );
