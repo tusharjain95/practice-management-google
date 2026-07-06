@@ -383,6 +383,107 @@ Use the included `Dockerfile`. Apply a standard Deployment + Service + Ingress +
 
 ---
 
+## 📢 Notification Integrations Setup Guide
+
+The CA Practice Manager includes support for automated notification delivery via **Telegram** and **WhatsApp**. Out of the box, the application defaults to `mock` mode (logs to database and console), allowing you to test flows without external services. To enable live messages, follow the detailed setup instructions below.
+
+---
+
+### 🤖 1. Telegram Notifications Setup
+
+Telegram is the quickest and easiest free notification channel to set up.
+
+#### Step A: Create Your Telegram Bot
+1. Open the Telegram app and search for [@BotFather](https://t.me/BotFather) (the official bot creator).
+2. Send the `/newbot` command.
+3. Follow the prompts to set a **Display Name** (e.g., `My Firm Alerts`) and a unique **Username** ending in `bot` (e.g., `MyFirmAlertsBot`).
+4. **BotFather** will reply with your **HTTP API Token** (e.g., `123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ`). Keep this token completely secure.
+
+#### Step B: Configure Server Environment Variables
+Add your token to your `.env` file (local development) or your cloud host's environment settings (e.g., Vercel, Docker):
+```env
+TELEGRAM_BOT_TOKEN=your_http_api_token_here
+```
+*(If `TELEGRAM_BOT_TOKEN` is configured, the system automatically shifts from `mock` mode to active `telegram` mode).*
+
+#### Step C: Enable Notifications on Your User Profile
+Each staff member or administrator who wants to receive Telegram alerts must:
+1. Open Telegram, search for your bot's username (e.g., `@MyFirmAlertsBot`), and click **"Start"** (or send `/start`). **CRITICAL**: The bot *cannot* message you first; you must activate it first by starting a chat.
+2. Get your **Telegram Chat ID**. You can find your Chat ID easily by chatting with [@userinfobot](https://t.me/userinfobot) or [@GetMyChatID_Bot](https://t.me/GetMyChatID_Bot) in Telegram.
+3. Log in to the CA Practice Manager app.
+4. Click your name in the top right corner and select **My Profile**.
+5. Paste your numeric **Telegram Chat ID** in the field.
+6. Click the **"Send Test"** button next to the input to verify that the connection works! You should receive a direct message from your bot instantly.
+7. Under **Communication Channels**, check the boxes to toggle **Telegram Task Alerts** and/or **Telegram Daily Roster PDF**.
+8. Click **Save Changes** at the bottom of the page.
+
+---
+
+### 🟢 2. WhatsApp Notifications Setup
+
+WhatsApp notifications are powered by the official **Meta WhatsApp Cloud API**. 
+
+#### Step A: Set Up a Meta Developer Account
+1. Log in to the [Meta Developers Portal](https://developers.facebook.com/).
+2. Create a **Business App** (choose "Other" -> "Business" if prompted).
+3. Under the App Dashboard, find **WhatsApp** in the product list and click **Set up**.
+4. Register a Facebook Business Portfolio or select an existing one.
+
+#### Step B: Retrieve Access Token and Phone Number ID
+1. In the left menu of the WhatsApp dashboard, go to **API Setup**.
+2. Under **Step 1: Send and receive messages**, select your phone number.
+3. Copy the **Phone Number ID** (e.g., `123456789012345`). Note that this is different from your WhatsApp Business Account ID.
+4. Copy the **Temporary Access Token**. 
+   - *Note for Production*: Temporary tokens expire in 24 hours. For a production deployment, go to your Meta Business Manager, create a **System User**, assign the `whatsapp_business_messaging` permission, and generate a **Permanent Access Token**.
+
+#### Step C: Configure WhatsApp Message Templates
+Because WhatsApp requires pre-approved templates for outgoing business messages, you must register templates under **WhatsApp Manager** -> **Message Templates** on the Meta Portal. Submit three templates matching these structures:
+
+1. **Task Assigned Template** (Default name: `task_assigned_notification`):
+   - **Category**: Utility
+   - **Body text**: 
+     ```text
+     Hello {{1}}, you have been assigned a new task: "{{2}}". Due date: {{3}}. Priority: {{4}}. Please login to check details.
+     ```
+2. **Task Reassigned Template** (Default name: `task_reassigned_notification`):
+   - **Category**: Utility
+   - **Body text**:
+     ```text
+     Hello {{1}}, a task has been reassigned to you: "{{2}}". Due date: {{3}}. Priority: {{4}}. Please review.
+     ```
+3. **Daily Staff Roster PDF Template** (Default name: `daily_staff_roster_pdf`):
+   - **Category**: Utility
+   - **Header**: Select **Document** (this is required to attach the PDF roster file).
+   - **Body text**:
+     ```text
+     Hello {{1}}, please find attached your daily staff roster PDF for {{2}}. Have a productive day!
+     ```
+
+#### Step D: Configure Server Environment Variables
+Update your environment configuration:
+```env
+WHATSAPP_PROVIDER=meta
+WHATSAPP_ACCESS_TOKEN=your_permanent_access_token_here
+WHATSAPP_PHONE_NUMBER_ID=your_phone_number_id_here
+APP_BASE_URL=https://your-app-domain.vercel.app  # CRITICAL: Must be a publicly reachable HTTPS domain so Meta's servers can pull the dynamic PDF
+WHATSAPP_LANGUAGE_CODE=en
+WHATSAPP_TASK_TEMPLATE=task_assigned_notification
+WHATSAPP_REASSIGNED_TEMPLATE=task_reassigned_notification
+WHATSAPP_ROSTER_TEMPLATE=daily_staff_roster_pdf
+```
+
+#### Step E: Opt-In on Your User Profile
+Each user wanting WhatsApp notifications must:
+1. Log in to the CA Practice Manager.
+2. Click their name in the top right and open **My Profile**.
+3. Enter their **WhatsApp Number in full international format** including country code, but excluding the `+` prefix, spaces, or dashes (e.g., `919876543210` for India, `12025550143` for US).
+4. Check **Opt-In to WhatsApp Notifications**.
+5. Click **"Send Test"** next to the input to verify your Meta API setup. This will trigger a live template message with your name to your phone!
+6. Enable **WhatsApp Task Alerts** and/or **Daily Roster PDF via WhatsApp** in the checkboxes.
+7. Click **Save Changes**.
+
+---
+
 ## 📖 How to Use — Daily Workflow Guide
 
 ### 🚪 First-time setup (Admin)

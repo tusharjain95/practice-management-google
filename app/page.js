@@ -839,6 +839,54 @@ function MyProfileDialog({ user, onUserUpdated, onClose }) {
     telegramDailyRosterEnabled: !!user.telegramDailyRosterEnabled,
   });
   const [saving, setSaving] = useState(false);
+  const [testingTelegram, setTestingTelegram] = useState(false);
+  const [testingWhatsApp, setTestingWhatsApp] = useState(false);
+
+  async function testTelegram() {
+    if (!f.telegramChatId) {
+      toast.error('Please enter a Telegram Chat ID first');
+      return;
+    }
+    setTestingTelegram(true);
+    try {
+      const res = await call('auth/test-telegram', {
+        method: 'POST',
+        body: { telegramChatId: f.telegramChatId },
+      });
+      if (res.ok) {
+        toast.success('Test message sent successfully! Check your Telegram app.');
+      } else {
+        toast.error(res.error || 'Failed to send test message');
+      }
+    } catch (e) {
+      toast.error(e.message || 'Error occurred while testing Telegram');
+    } finally {
+      setTestingTelegram(false);
+    }
+  }
+
+  async function testWhatsApp() {
+    if (!f.whatsappNumber) {
+      toast.error('Please enter a WhatsApp Number first');
+      return;
+    }
+    setTestingWhatsApp(true);
+    try {
+      const res = await call('auth/test-whatsapp', {
+        method: 'POST',
+        body: { whatsappNumber: f.whatsappNumber },
+      });
+      if (res.ok) {
+        toast.success('Test template message sent successfully! Check your WhatsApp.');
+      } else {
+        toast.error(res.error || 'Failed to send test message');
+      }
+    } catch (e) {
+      toast.error(e.message || 'Error occurred while testing WhatsApp');
+    } finally {
+      setTestingWhatsApp(false);
+    }
+  }
 
   async function submit(e) {
     e.preventDefault();
@@ -926,12 +974,24 @@ function MyProfileDialog({ user, onUserUpdated, onClose }) {
             </div>
 
             <Field label="Telegram Chat ID (e.g. 123456789)">
-              <Input 
-                type="text" 
-                placeholder="Paste your Telegram Chat ID here" 
-                value={f.telegramChatId || ''} 
-                onChange={e => setF({ ...f, telegramChatId: e.target.value })} 
-              />
+              <div className="flex gap-2">
+                <Input 
+                  type="text" 
+                  placeholder="Paste your Telegram Chat ID here" 
+                  value={f.telegramChatId || ''} 
+                  onChange={e => setF({ ...f, telegramChatId: e.target.value })} 
+                />
+                <Button 
+                  type="button" 
+                  variant="outline" 
+                  size="sm"
+                  onClick={testTelegram}
+                  disabled={testingTelegram || !f.telegramChatId}
+                  className="shrink-0 text-xs border-indigo-200 text-indigo-700 hover:bg-indigo-50"
+                >
+                  {testingTelegram ? 'Testing...' : 'Send Test'}
+                </Button>
+              </div>
             </Field>
 
             <div className="space-y-2 pl-1">
@@ -976,12 +1036,24 @@ function MyProfileDialog({ user, onUserUpdated, onClose }) {
             </div>
 
             <Field label="WhatsApp Number (with country code, e.g. 919876543210)">
-              <Input 
-                type="text" 
-                placeholder="e.g. 919876543210" 
-                value={f.whatsappNumber || ''} 
-                onChange={e => setF({ ...f, whatsappNumber: e.target.value })} 
-              />
+              <div className="flex gap-2">
+                <Input 
+                  type="text" 
+                  placeholder="e.g. 919876543210" 
+                  value={f.whatsappNumber || ''} 
+                  onChange={e => setF({ ...f, whatsappNumber: e.target.value })} 
+                />
+                <Button 
+                  type="button" 
+                  variant="outline" 
+                  size="sm"
+                  onClick={testWhatsApp}
+                  disabled={testingWhatsApp || !f.whatsappNumber}
+                  className="shrink-0 text-xs border-emerald-200 text-emerald-700 hover:bg-emerald-50"
+                >
+                  {testingWhatsApp ? 'Testing...' : 'Send Test'}
+                </Button>
+              </div>
             </Field>
 
             <div className="space-y-2 pl-1">

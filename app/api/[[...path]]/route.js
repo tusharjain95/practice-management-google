@@ -11,14 +11,16 @@ import {
   sendDailyRosterPdfWhatsApp,
   generateRosterPdfBuffer,
   sendWhatsAppTemplateMessage,
-  logNotification
+  logNotification,
+  sendTestWhatsApp
 } from '@/lib/whatsapp/client';
 import {
   sendTaskAssignedTelegram,
   sendTaskReassignedTelegram,
   sendLeadAssignedTelegram,
   sendLeadReassignedTelegram,
-  getBotUsername
+  getBotUsername,
+  sendTestTelegram
 } from '@/lib/telegram/client';
 
 export const runtime = 'nodejs';
@@ -488,10 +490,12 @@ async function handle(request, ctx) {
       }
 
       let activeOrgId = request.headers.get('x-org-id');
-      let orgMembership = me.orgs.find(o => o.orgId === activeOrgId);
+      let orgMembership = (Array.isArray(me.orgs) && me.orgs.length > 0)
+        ? me.orgs.find(o => o.orgId === activeOrgId)
+        : null;
       if (!orgMembership) {
-        activeOrgId = me.orgs[0].orgId;
-        orgMembership = me.orgs[0];
+        activeOrgId = (Array.isArray(me.orgs) && me.orgs.length > 0) ? me.orgs[0].orgId : null;
+        orgMembership = (Array.isArray(me.orgs) && me.orgs.length > 0) ? me.orgs[0] : null;
       }
 
       const botUsername = await getBotUsername();
@@ -500,9 +504,9 @@ async function handle(request, ctx) {
           id: me.id,
           email: me.email,
           name: me.name,
-          role: orgMembership.role,
+          role: orgMembership ? orgMembership.role : me.role || 'staff',
           activeOrgId: activeOrgId,
-          orgs: me.orgs,
+          orgs: me.orgs || [],
           permissions: me.permissions || {},
           whatsappNumber: me.whatsappNumber || '',
           whatsappOptIn: !!me.whatsappOptIn,
@@ -608,6 +612,38 @@ async function handle(request, ctx) {
       return json({ ok: true, user: updatedUser, token });
     }
 
+    // Send a test Telegram notification
+    if (route === 'auth/test-telegram' && method === 'POST') {
+      const u = verifyAuth(request);
+      if (!u) return json({ error: 'Unauthorized' }, 401);
+      const { telegramChatId } = await request.json();
+      if (!telegramChatId) {
+        return json({ error: 'Telegram Chat ID is required' }, 400);
+      }
+      const result = await sendTestTelegram(telegramChatId);
+      if (result.success) {
+        return json({ ok: true, message: 'Test message sent successfully!' });
+      } else {
+        return json({ error: result.error || 'Failed to send test message. Check if your bot token is correct and you have clicked /start in the bot.' }, 500);
+      }
+    }
+
+    // Send a test WhatsApp notification
+    if (route === 'auth/test-whatsapp' && method === 'POST') {
+      const u = verifyAuth(request);
+      if (!u) return json({ error: 'Unauthorized' }, 401);
+      const { whatsappNumber } = await request.json();
+      if (!whatsappNumber) {
+        return json({ error: 'WhatsApp number is required' }, 400);
+      }
+      const result = await sendTestWhatsApp(whatsappNumber, u.name);
+      if (result.success) {
+        return json({ ok: true, message: 'Test WhatsApp message sent successfully!' });
+      } else {
+        return json({ error: result.error || 'Failed to send test message. Check your Meta credentials and templates.' }, 500);
+      }
+    }
+
     // From here on, auth required
     const decoded = verifyAuth(request);
     if (!decoded) return json({ error: 'Unauthorized' }, 401);
@@ -651,13 +687,15 @@ async function handle(request, ctx) {
 
     // Now determine the active organization ID
     let activeOrgId = request.headers.get('x-org-id');
-    let orgMembership = me.orgs.find(o => o.orgId === activeOrgId);
+    let orgMembership = (Array.isArray(me.orgs) && me.orgs.length > 0)
+      ? me.orgs.find(o => o.orgId === activeOrgId)
+      : null;
     if (!orgMembership) {
-      activeOrgId = me.orgs[0].orgId;
-      orgMembership = me.orgs[0];
+      activeOrgId = (Array.isArray(me.orgs) && me.orgs.length > 0) ? me.orgs[0].orgId : null;
+      orgMembership = (Array.isArray(me.orgs) && me.orgs.length > 0) ? me.orgs[0] : null;
     }
 
-    me.role = orgMembership.role;
+    me.role = orgMembership ? orgMembership.role : me.role || 'staff';
     me.activeOrgId = activeOrgId;
 
     // -------- ORGANISATIONS --------
