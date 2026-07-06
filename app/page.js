@@ -9,7 +9,7 @@ import {
   FileDown, ChevronRight, Wallet, Receipt, Palette, Bell,
   IndianRupee, Building2, ChevronLeft, RotateCcw, Upload, KeyRound,
   BarChart3, ClipboardCheck, ShieldCheck, Database, DownloadCloud, UploadCloud,
-  MessageSquare, Menu, X, ArrowUpDown, ArrowUp, ArrowDown,
+  MessageSquare, Menu, X, ArrowUpDown, ArrowUp, ArrowDown, Send,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -684,9 +684,9 @@ function Shell({ user, onUserUpdated, view, viewParams, setView, onLogout }) {
       </aside>
 
       <main className="flex-1 overflow-auto min-w-0">
-        <TopBar user={user} setView={setView} onMenuClick={() => setSidebarOpen(true)} activeOrgName={activeOrgName} />
+        <TopBar user={user} setView={setView} onMenuClick={() => setSidebarOpen(true)} activeOrgName={activeOrgName} onOpenProfile={() => setProfileOpen(true)} />
         <div className="p-3 sm:p-4 md:p-6 max-w-[1400px] mx-auto">
-          {view === 'dashboard' && <Dashboard user={user} setView={setView} />}
+          {view === 'dashboard' && <Dashboard user={user} setView={setView} onOpenProfile={() => setProfileOpen(true)} />}
           {view === 'calendar' && <CalendarView user={user} setView={setView} />}
           {view === 'leads' && <Leads user={user} viewParams={viewParams} setView={setView} />}
           {view === 'tasks' && <Tasks user={user} viewParams={viewParams} setView={setView} />}
@@ -829,6 +829,14 @@ function MyProfileDialog({ user, onUserUpdated, onClose }) {
     currentPassword: '',
     newPassword: '',
     confirm: '',
+    whatsappNumber: user.whatsappNumber || '',
+    whatsappOptIn: !!user.whatsappOptIn,
+    whatsappNotificationsEnabled: !!user.whatsappNotificationsEnabled,
+    dailyRosterEnabled: !!user.dailyRosterEnabled,
+    telegramChatId: user.telegramChatId || '',
+    telegramOptIn: !!user.telegramOptIn,
+    telegramNotificationsEnabled: !!user.telegramNotificationsEnabled,
+    telegramDailyRosterEnabled: !!user.telegramDailyRosterEnabled,
   });
   const [saving, setSaving] = useState(false);
 
@@ -847,6 +855,14 @@ function MyProfileDialog({ user, onUserUpdated, onClose }) {
           email: f.email,
           currentPassword: f.currentPassword || undefined,
           newPassword: f.newPassword || undefined,
+          whatsappNumber: f.whatsappNumber,
+          whatsappOptIn: !!f.whatsappOptIn,
+          whatsappNotificationsEnabled: !!f.whatsappNotificationsEnabled,
+          dailyRosterEnabled: !!f.dailyRosterEnabled,
+          telegramChatId: f.telegramChatId,
+          telegramOptIn: !!f.telegramOptIn,
+          telegramNotificationsEnabled: !!f.telegramNotificationsEnabled,
+          telegramDailyRosterEnabled: !!f.telegramDailyRosterEnabled,
         },
       });
       toast.success('Profile updated successfully');
@@ -867,27 +883,155 @@ function MyProfileDialog({ user, onUserUpdated, onClose }) {
     <Dialog open onOpenChange={onClose}>
       <DialogContent className="max-w-md w-[95vw] max-h-[95vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>My Profile</DialogTitle>
-          <DialogDescription>Update your profile name, email, and password.</DialogDescription>
+          <DialogTitle>My Profile & Notifications</DialogTitle>
+          <DialogDescription>Update your profile, security settings, and communication channels.</DialogDescription>
         </DialogHeader>
-        <form onSubmit={submit} className="space-y-3">
-          <Field label="Name *">
-            <Input value={f.name} onChange={e => setF({ ...f, name: e.target.value })} required />
-          </Field>
-          <Field label="Email * (for Login & Display)">
-            <Input type="email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} required />
-          </Field>
-          <Separator className="my-2" />
-          <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Change Password (Optional)</div>
-          <Field label="Current Password">
-            <Input type="password" value={f.currentPassword} onChange={e => setF({ ...f, currentPassword: e.target.value })} placeholder="Required only if changing password" />
-          </Field>
-          <Field label="New Password">
-            <Input type="password" value={f.newPassword} onChange={e => setF({ ...f, newPassword: e.target.value })} minLength={6} placeholder="Min 6 characters" />
-          </Field>
-          <Field label="Confirm New Password">
-            <Input type="password" value={f.confirm} onChange={e => setF({ ...f, confirm: e.target.value })} minLength={6} />
-          </Field>
+        <form onSubmit={submit} className="space-y-4">
+          <div className="space-y-3">
+            <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Basic Information</div>
+            <Field label="Name *">
+              <Input value={f.name} onChange={e => setF({ ...f, name: e.target.value })} required />
+            </Field>
+            <Field label="Email * (for Login & Display)">
+              <Input type="email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} required />
+            </Field>
+          </div>
+
+          <Separator />
+
+          {/* Telegram Settings */}
+          <div className="space-y-3">
+            <div className="text-xs font-semibold text-indigo-600 uppercase tracking-wider flex items-center gap-1.5">
+              <Send className="w-3.5 h-3.5" /> Telegram Integration
+            </div>
+            
+            <div className="p-3 bg-indigo-50/50 rounded-lg border border-indigo-100/60 text-[11px] text-slate-600 space-y-1.5 leading-relaxed">
+              <div className="font-semibold text-indigo-950 flex items-center gap-1">
+                🤖 How to Connect Your Telegram:
+              </div>
+              <ol className="list-decimal pl-4 space-y-1">
+                <li>
+                  Open Telegram and message <a href="https://t.me/userinfobot" target="_blank" rel="noopener noreferrer" className="underline font-bold text-indigo-700 hover:text-indigo-800">@userinfobot</a> to find your unique Chat ID.
+                </li>
+                <li>
+                  Start the chat with the bot, and copy the numeric <strong className="text-indigo-950">Id</strong> (e.g. <code>123456789</code>) it sends.
+                </li>
+                <li>
+                  Paste that ID in the field below, check the toggles, and click <strong className="text-indigo-950">Save Profile</strong>!
+                </li>
+                <li className="text-indigo-900 font-semibold mt-1">
+                  ⚠️ Crucial step: Open our notification bot <a href={`https://t.me/${user?.telegramBotUsername || 'MockPracticeRosterBot'}`} target="_blank" rel="noopener noreferrer" className="underline font-bold text-indigo-600 hover:text-indigo-800">@{user?.telegramBotUsername || 'MockPracticeRosterBot'}</a> and click <strong className="text-indigo-950">/start</strong> to permit alerts.
+                </li>
+              </ol>
+            </div>
+
+            <Field label="Telegram Chat ID (e.g. 123456789)">
+              <Input 
+                type="text" 
+                placeholder="Paste your Telegram Chat ID here" 
+                value={f.telegramChatId || ''} 
+                onChange={e => setF({ ...f, telegramChatId: e.target.value })} 
+              />
+            </Field>
+
+            <div className="space-y-2 pl-1">
+              <label className="flex items-center space-x-2 text-sm cursor-pointer select-none">
+                <input 
+                  type="checkbox" 
+                  checked={!!f.telegramOptIn} 
+                  onChange={e => setF({ ...f, telegramOptIn: e.target.checked })} 
+                  className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-4 w-4" 
+                />
+                <span className="text-slate-700 font-medium">Telegram Opt-In Confirmed</span>
+              </label>
+              
+              <label className="flex items-center space-x-2 text-sm cursor-pointer select-none">
+                <input 
+                  type="checkbox" 
+                  checked={!!f.telegramNotificationsEnabled} 
+                  onChange={e => setF({ ...f, telegramNotificationsEnabled: e.target.checked })} 
+                  className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-4 w-4" 
+                />
+                <span className="text-slate-700 font-medium">Receive Task & Lead Alerts on Telegram</span>
+              </label>
+              
+              <label className="flex items-center space-x-2 text-sm cursor-pointer select-none">
+                <input 
+                  type="checkbox" 
+                  checked={!!f.telegramDailyRosterEnabled} 
+                  onChange={e => setF({ ...f, telegramDailyRosterEnabled: e.target.checked })} 
+                  className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-4 w-4" 
+                />
+                <span className="text-slate-700 font-medium">Receive Daily PDF Roster on Telegram</span>
+              </label>
+            </div>
+          </div>
+
+          <Separator />
+
+          {/* WhatsApp Settings */}
+          <div className="space-y-3">
+            <div className="text-xs font-semibold text-emerald-600 uppercase tracking-wider flex items-center gap-1.5">
+              <MessageSquare className="w-3.5 h-3.5" /> WhatsApp Integration
+            </div>
+
+            <Field label="WhatsApp Number (with country code, e.g. 919876543210)">
+              <Input 
+                type="text" 
+                placeholder="e.g. 919876543210" 
+                value={f.whatsappNumber || ''} 
+                onChange={e => setF({ ...f, whatsappNumber: e.target.value })} 
+              />
+            </Field>
+
+            <div className="space-y-2 pl-1">
+              <label className="flex items-center space-x-2 text-sm cursor-pointer select-none">
+                <input 
+                  type="checkbox" 
+                  checked={!!f.whatsappOptIn} 
+                  onChange={e => setF({ ...f, whatsappOptIn: e.target.checked })} 
+                  className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 h-4 w-4" 
+                />
+                <span className="text-slate-700 font-medium">WhatsApp Opt-In Confirmed</span>
+              </label>
+              
+              <label className="flex items-center space-x-2 text-sm cursor-pointer select-none">
+                <input 
+                  type="checkbox" 
+                  checked={!!f.whatsappNotificationsEnabled} 
+                  onChange={e => setF({ ...f, whatsappNotificationsEnabled: e.target.checked })} 
+                  className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 h-4 w-4" 
+                />
+                <span className="text-slate-700 font-medium">Receive Task & Lead Alerts on WhatsApp</span>
+              </label>
+              
+              <label className="flex items-center space-x-2 text-sm cursor-pointer select-none">
+                <input 
+                  type="checkbox" 
+                  checked={!!f.dailyRosterEnabled} 
+                  onChange={e => setF({ ...f, dailyRosterEnabled: e.target.checked })} 
+                  className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 h-4 w-4" 
+                />
+                <span className="text-slate-700 font-medium">Receive Daily PDF Roster on WhatsApp</span>
+              </label>
+            </div>
+          </div>
+
+          <Separator />
+
+          <div className="space-y-3">
+            <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Change Password (Optional)</div>
+            <Field label="Current Password">
+              <Input type="password" value={f.currentPassword} onChange={e => setF({ ...f, currentPassword: e.target.value })} placeholder="Required only if changing password" />
+            </Field>
+            <Field label="New Password">
+              <Input type="password" value={f.newPassword} onChange={e => setF({ ...f, newPassword: e.target.value })} minLength={6} placeholder="Min 6 characters" />
+            </Field>
+            <Field label="Confirm New Password">
+              <Input type="password" value={f.confirm} onChange={e => setF({ ...f, confirm: e.target.value })} minLength={6} />
+            </Field>
+          </div>
+
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
             <Button type="submit" disabled={saving}>{saving ? 'Saving...' : 'Save Profile'}</Button>
@@ -898,7 +1042,7 @@ function MyProfileDialog({ user, onUserUpdated, onClose }) {
   );
 }
 
-function TopBar({ user, setView, onMenuClick, activeOrgName }) {
+function TopBar({ user, setView, onMenuClick, activeOrgName, onOpenProfile }) {
   const { call } = useApi();
   const [q, setQ] = useState('');
   const [results, setResults] = useState(null);
@@ -965,6 +1109,15 @@ function TopBar({ user, setView, onMenuClick, activeOrgName }) {
               {activeOrgName}
             </Badge>
           )}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50 rounded-full h-9 w-9 p-0 flex items-center justify-center cursor-pointer shrink-0"
+            onClick={onOpenProfile}
+            title="Connect / Configure Telegram & WhatsApp Notifications"
+          >
+            <Send className="w-5 h-5" />
+          </Button>
           <RemindersBell user={user} setView={setView} />
         </div>
       </div>
@@ -1051,7 +1204,35 @@ function ReminderSection({ title, items, setView, kind }) {
   );
 }
 
-function Dashboard({ user, setView }) {
+function TelegramBanner({ user, onOpenProfile }) {
+  if (user?.telegramChatId) return null;
+  return (
+    <div className="bg-gradient-to-r from-indigo-50 to-indigo-100/50 border border-indigo-200/80 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-sm">
+      <div className="flex items-start gap-3">
+        <div className="p-2 bg-indigo-600 text-white rounded-lg shrink-0 shadow-sm">
+          <Send className="w-5 h-5 animate-pulse" />
+        </div>
+        <div>
+          <h4 className="text-sm font-semibold text-indigo-950 flex items-center gap-1.5">
+            Connect Telegram Notification System 🤖
+          </h4>
+          <p className="text-xs text-indigo-850 mt-0.5 leading-relaxed max-w-2xl">
+            Never miss an update. Receive instant alerts for task assignments, lead allocation, and your daily performance PDF roster directly on Telegram.
+          </p>
+        </div>
+      </div>
+      <Button 
+        size="sm" 
+        className="bg-indigo-600 hover:bg-indigo-700 text-white font-medium shrink-0 cursor-pointer self-start sm:self-center shadow-sm"
+        onClick={onOpenProfile}
+      >
+        <Send className="w-3.5 h-3.5 mr-1.5" /> Connect Now
+      </Button>
+    </div>
+  );
+}
+
+function Dashboard({ user, setView, onOpenProfile }) {
   const { call } = useApi();
   const [data, setData] = useState(null);
 
@@ -1075,6 +1256,7 @@ function Dashboard({ user, setView }) {
     return (
       <div className="space-y-6">
         <PageHeader title={`Welcome, ${user.name}`} subtitle="Your tasks at a glance" />
+        <TelegramBanner user={user} onOpenProfile={onOpenProfile} />
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
           {cards.map(c => <StatCard key={c.label} {...c} />)}
         </div>
@@ -1098,6 +1280,7 @@ function Dashboard({ user, setView }) {
   return (
     <div className="space-y-6">
       <PageHeader title={`Welcome, ${user.name}`} subtitle="Practice overview — click any card or row to drill down" />
+      <TelegramBanner user={user} onOpenProfile={onOpenProfile} />
       <div>
         <div className="text-sm font-semibold text-slate-600 mb-3 flex items-center gap-2"><Target className="w-4 h-4" /> LEADS</div>
         <div className="grid grid-cols-2 md:grid-cols-5 gap-4">

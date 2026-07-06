@@ -17,7 +17,8 @@ import {
   sendTaskAssignedTelegram,
   sendTaskReassignedTelegram,
   sendLeadAssignedTelegram,
-  sendLeadReassignedTelegram
+  sendLeadReassignedTelegram,
+  getBotUsername
 } from '@/lib/telegram/client';
 
 export const runtime = 'nodejs';
@@ -493,6 +494,7 @@ async function handle(request, ctx) {
         orgMembership = me.orgs[0];
       }
 
+      const botUsername = await getBotUsername();
       return json({
         user: {
           id: me.id,
@@ -501,7 +503,16 @@ async function handle(request, ctx) {
           role: orgMembership.role,
           activeOrgId: activeOrgId,
           orgs: me.orgs,
-          permissions: me.permissions || {}
+          permissions: me.permissions || {},
+          whatsappNumber: me.whatsappNumber || '',
+          whatsappOptIn: !!me.whatsappOptIn,
+          whatsappNotificationsEnabled: !!me.whatsappNotificationsEnabled,
+          dailyRosterEnabled: !!me.dailyRosterEnabled,
+          telegramChatId: me.telegramChatId || '',
+          telegramOptIn: !!me.telegramOptIn,
+          telegramNotificationsEnabled: !!me.telegramNotificationsEnabled,
+          telegramDailyRosterEnabled: !!me.telegramDailyRosterEnabled,
+          telegramBotUsername: botUsername,
         }
       });
     }
@@ -524,11 +535,12 @@ async function handle(request, ctx) {
       return json({ ok: true });
     }
 
-    // Update own profile (including email, name, password)
+    // Update own profile (including email, name, password, whatsapp, telegram)
     if (route === 'auth/profile' && method === 'POST') {
       const u = verifyAuth(request);
       if (!u) return json({ error: 'Unauthorized' }, 401);
-      const { email, name, currentPassword, newPassword } = await request.json();
+      const body = await request.json();
+      const { email, name, currentPassword, newPassword } = body;
       const user = await db.collection('users').findOne({ id: u.id });
       if (!user) return json({ error: 'User not found' }, 404);
 
@@ -546,6 +558,16 @@ async function handle(request, ctx) {
         updatedAt: new Date().toISOString()
       };
 
+      if (body.whatsappNumber !== undefined) update.whatsappNumber = body.whatsappNumber;
+      if (body.whatsappOptIn !== undefined) update.whatsappOptIn = !!body.whatsappOptIn;
+      if (body.whatsappNotificationsEnabled !== undefined) update.whatsappNotificationsEnabled = !!body.whatsappNotificationsEnabled;
+      if (body.dailyRosterEnabled !== undefined) update.dailyRosterEnabled = !!body.dailyRosterEnabled;
+
+      if (body.telegramChatId !== undefined) update.telegramChatId = body.telegramChatId;
+      if (body.telegramOptIn !== undefined) update.telegramOptIn = !!body.telegramOptIn;
+      if (body.telegramNotificationsEnabled !== undefined) update.telegramNotificationsEnabled = !!body.telegramNotificationsEnabled;
+      if (body.telegramDailyRosterEnabled !== undefined) update.telegramDailyRosterEnabled = !!body.telegramDailyRosterEnabled;
+
       if (newPassword) {
         if (!currentPassword) {
           return json({ error: 'Current password is required to set a new password' }, 400);
@@ -560,12 +582,24 @@ async function handle(request, ctx) {
 
       await db.collection('users').updateOne({ id: u.id }, { $set: update });
 
+      const botUsername = await getBotUsername();
       const updatedUser = {
         id: user.id,
         email: updatedEmail,
         name: update.name,
         role: user.role,
-        permissions: user.permissions || {}
+        permissions: user.permissions || {},
+        orgs: user.orgs || [],
+        activeOrgId: user.activeOrgId || null,
+        whatsappNumber: update.whatsappNumber !== undefined ? update.whatsappNumber : user.whatsappNumber,
+        whatsappOptIn: update.whatsappOptIn !== undefined ? update.whatsappOptIn : user.whatsappOptIn,
+        whatsappNotificationsEnabled: update.whatsappNotificationsEnabled !== undefined ? update.whatsappNotificationsEnabled : user.whatsappNotificationsEnabled,
+        dailyRosterEnabled: update.dailyRosterEnabled !== undefined ? update.dailyRosterEnabled : user.dailyRosterEnabled,
+        telegramChatId: update.telegramChatId !== undefined ? update.telegramChatId : user.telegramChatId,
+        telegramOptIn: update.telegramOptIn !== undefined ? update.telegramOptIn : user.telegramOptIn,
+        telegramNotificationsEnabled: update.telegramNotificationsEnabled !== undefined ? update.telegramNotificationsEnabled : user.telegramNotificationsEnabled,
+        telegramDailyRosterEnabled: update.telegramDailyRosterEnabled !== undefined ? update.telegramDailyRosterEnabled : user.telegramDailyRosterEnabled,
+        telegramBotUsername: botUsername,
       };
       const token = jwt.sign(updatedUser, JWT_SECRET, { expiresIn: '7d' });
 
