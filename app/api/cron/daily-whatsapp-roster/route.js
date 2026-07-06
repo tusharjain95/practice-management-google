@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import jwt from 'jsonwebtoken';
 import { sendDailyRosterPdfWhatsApp } from '@/lib/whatsapp/client';
+import { sendDailyRosterTelegram } from '@/lib/telegram/client';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret';
 const APP_BASE_URL = process.env.APP_BASE_URL || 'http://localhost:3000';
@@ -29,11 +30,13 @@ async function handleCron(request) {
   try {
     const db = await getDb();
     
-    // 2. Fetch all users who opted-in and have Daily Roster enabled
+    // 2. Fetch all active users who opted-in and have Daily Roster enabled for either WhatsApp or Telegram
     const users = await db.collection('users').find({
-      dailyRosterEnabled: true,
-      whatsappOptIn: true,
-      active: true
+      active: true,
+      $or: [
+        { dailyRosterEnabled: true, whatsappOptIn: true },
+        { telegramDailyRosterEnabled: true, telegramOptIn: true }
+      ]
     }).toArray();
 
     if (users.length === 0) {
@@ -55,10 +58,47 @@ async function handleCron(request) {
     // 4. Process each user's roster
     for (const user of users) {
       try {
-        if (!user.whatsappNumber) {
-          results.push({ name: user.name, status: 'skipped', reason: 'No WhatsApp number configured' });
-          continue;
-        }
+        const orgIds = (user.orgs || []).map(o => o.orgId);
+
+        // Fetch Yesterday's Performance Statistics
+        const completedYesterdayCount = await db.collection('tasks').countDocuments({
+          orgId: { $in: orgIds },
+          $or: [{ assignedTo: user.id }, { assignees: user.id }],
+          status: 'Completed',
+          updatedAt: { $regex: '^' + yesterdayStr }
+        });
+
+        const openedYesterdayCount = await db.collection('tasks').countDocuments({
+          orgId: { $in: orgIds },
+          createdBy: user.id,
+          createdAt: { $regex: '^' + yesterdayStr }
+        });
+
+        const assignedYesterdayCount = await db.collection('tasks').countDocuments({
+          orgId: { $in: orgIds },
+          $or: [{ assignedTo: user.id }, { assignees: user.id }],
+          createdAt: { $regex: '^' + yesterdayStr }
+        });
+
+        // Current workload counts
+        const pendingTasks = await db.collection('tasks').find({
+          orgId: { $in: orgIds },
+          $or: [{ assignedTo: user.id }, { assignees: user.id }],
+          status: { $ne: 'Completed' }
+        }).toArray();
+
+        const pendingCount = pendingTasks.length;
+        const overdueCount = pendingTasks.filter(t => t.dueDate && t.dueDate < dateStr).length;
+        const dueTodayCount = pendingTasks.filter(t => t.dueDate === dateStr).length;
+
+        const performanceStats = {
+          completedYesterdayCount,
+          openedYesterdayCount,
+          assignedYesterdayCount,
+          pendingCount,
+          overdueCount,
+          dueTodayCount
+        };
 
         // Generate dynamic secure JWT token that expires in 24 hours to secure PDF access
         const token = jwt.sign(
@@ -67,13 +107,36 @@ async function handleCron(request) {
           { expiresIn: '1d' }
         );
 
-        // Construct the public URL where Meta/WhatsApp Cloud API can fetch the PDF
+        // Construct the public URL where external APIs or internal servers can fetch the PDF
         const publicPdfUrl = `${APP_BASE_URL}/api/whatsapp/pdf-roster?token=${token}`;
 
-        // Send roster notification
-        await sendDailyRosterPdfWhatsApp(db, user, dateStr, publicPdfUrl);
-        
-        results.push({ name: user.name, status: 'sent', date: dateStr });
+        const statusReport = { name: user.name, date: dateStr, channels: {} };
+
+        // Send via WhatsApp if enabled
+        if (user.dailyRosterEnabled && user.whatsappOptIn && user.whatsappNumber) {
+          try {
+            await sendDailyRosterPdfWhatsApp(db, user, dateStr, publicPdfUrl);
+            statusReport.channels.whatsapp = 'sent';
+          } catch (err) {
+            statusReport.channels.whatsapp = `failed: ${err.message}`;
+          }
+        } else if (user.dailyRosterEnabled) {
+          statusReport.channels.whatsapp = 'skipped (missing number or opt-in)';
+        }
+
+        // Send via Telegram if enabled
+        if (user.telegramDailyRosterEnabled && user.telegramOptIn && user.telegramChatId) {
+          try {
+            await sendDailyRosterTelegram(db, user, dateStr, publicPdfUrl, performanceStats);
+            statusReport.channels.telegram = 'sent';
+          } catch (err) {
+            statusReport.channels.telegram = `failed: ${err.message}`;
+          }
+        } else if (user.telegramDailyRosterEnabled) {
+          statusReport.channels.telegram = 'skipped (missing chatId or opt-in)';
+        }
+
+        results.push(statusReport);
       } catch (userErr) {
         console.error(`[Cron Error] Failed processing roster for user ${user.name}:`, userErr);
         results.push({ name: user.name, status: 'failed', error: userErr.message });
@@ -81,14 +144,14 @@ async function handleCron(request) {
     }
 
     return NextResponse.json({
-      message: 'Daily WhatsApp roster process complete.',
+      message: 'Daily roster process complete.',
       processedCount: users.length,
       results,
       date: dateStr,
       yesterday: yesterdayStr
     });
   } catch (error) {
-    console.error('[Cron Error] Daily WhatsApp Roster process failed:', error);
+    console.error('[Cron Error] Daily Roster process failed:', error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }

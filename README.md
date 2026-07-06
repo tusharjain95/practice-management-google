@@ -193,11 +193,16 @@ WHATSAPP_TASK_TEMPLATE=task_assigned_notification
 WHATSAPP_REASSIGNED_TEMPLATE=task_reassigned_notification
 WHATSAPP_ROSTER_TEMPLATE=daily_staff_roster_pdf
 
+# Telegram Integration Configuration
+TELEGRAM_BOT_TOKEN=your_telegram_bot_token
+
 # Cron Job Protection Secret (Optional for local)
 CRON_SECRET=your_custom_cron_secret
 ```
 
-> **🔐 Important**: Replace `JWT_SECRET` with a strong random string. For live WhatsApp routing, set `WHATSAPP_PROVIDER=meta` and supply verified values from the Facebook Developer Portal. Never commit `.env` to git.
+> **🔐 Important**: Replace `JWT_SECRET` with a strong random string. For live WhatsApp routing, set `WHATSAPP_PROVIDER=meta` and supply verified values from the Facebook Developer Portal.
+> 
+> **🤖 Telegram Integration**: To enable real Telegram messages, set `TELEGRAM_BOT_TOKEN` using your Telegram bot token (created via [@BotFather](https://t.me/BotFather)). If left empty or undefined, the system automatically runs in **mock mode** for testing and logging without crashing. Never commit `.env` to git.
 
 ### 3. Start MongoDB
 ```bash

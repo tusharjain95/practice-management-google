@@ -2926,7 +2926,38 @@ function AdminResetPasswordDialog({ target, onClose }) {
 
 function UserForm({ user, initial, onClose, onSaved }) {
   const { call } = useApi();
-  const [f, setF] = useState(initial || { name: '', email: '', role: 'staff', password: '', whatsappNumber: '', whatsappOptIn: false, whatsappNotificationsEnabled: false, dailyRosterEnabled: false });
+  const [f, setF] = useState(() => {
+    if (initial) {
+      return {
+        name: initial.name || '',
+        email: initial.email || '',
+        role: initial.role || 'staff',
+        password: '',
+        whatsappNumber: initial.whatsappNumber || '',
+        whatsappOptIn: !!initial.whatsappOptIn,
+        whatsappNotificationsEnabled: !!initial.whatsappNotificationsEnabled,
+        dailyRosterEnabled: !!initial.dailyRosterEnabled,
+        telegramChatId: initial.telegramChatId || '',
+        telegramOptIn: !!initial.telegramOptIn,
+        telegramNotificationsEnabled: !!initial.telegramNotificationsEnabled,
+        telegramDailyRosterEnabled: !!initial.telegramDailyRosterEnabled,
+      };
+    }
+    return {
+      name: '',
+      email: '',
+      role: 'staff',
+      password: '',
+      whatsappNumber: '',
+      whatsappOptIn: false,
+      whatsappNotificationsEnabled: false,
+      dailyRosterEnabled: false,
+      telegramChatId: '',
+      telegramOptIn: false,
+      telegramNotificationsEnabled: false,
+      telegramDailyRosterEnabled: false,
+    };
+  });
   const [saving, setSaving] = useState(false);
   const [orgsList, setOrgsList] = useState([]);
   const [loadingOrgs, setLoadingOrgs] = useState(true);
@@ -2970,6 +3001,10 @@ function UserForm({ user, initial, onClose, onSaved }) {
           whatsappOptIn: !!f.whatsappOptIn,
           whatsappNotificationsEnabled: !!f.whatsappNotificationsEnabled,
           dailyRosterEnabled: !!f.dailyRosterEnabled,
+          telegramChatId: f.telegramChatId || '',
+          telegramOptIn: !!f.telegramOptIn,
+          telegramNotificationsEnabled: !!f.telegramNotificationsEnabled,
+          telegramDailyRosterEnabled: !!f.telegramDailyRosterEnabled,
           allowedOrgIds: selectedOrgIds
         };
         if (f.password) body.password = f.password;
@@ -2983,6 +3018,10 @@ function UserForm({ user, initial, onClose, onSaved }) {
           whatsappOptIn: !!f.whatsappOptIn,
           whatsappNotificationsEnabled: !!f.whatsappNotificationsEnabled,
           dailyRosterEnabled: !!f.dailyRosterEnabled,
+          telegramChatId: f.telegramChatId || '',
+          telegramOptIn: !!f.telegramOptIn,
+          telegramNotificationsEnabled: !!f.telegramNotificationsEnabled,
+          telegramDailyRosterEnabled: !!f.telegramDailyRosterEnabled,
           allowedOrgIds: selectedOrgIds
         };
         await call('users', { method: 'POST', body });
@@ -3010,6 +3049,11 @@ function UserForm({ user, initial, onClose, onSaved }) {
           
           <Field label="WhatsApp Number (e.g. 919876543210)">
             <Input type="text" placeholder="e.g. 919876543210" value={f.whatsappNumber || ''} onChange={e => setF({ ...f, whatsappNumber: e.target.value })} />
+          </Field>
+
+          <Field label="Telegram Chat ID (e.g. 123456789)">
+            <Input type="text" placeholder="e.g. 123456789" value={f.telegramChatId || ''} onChange={e => setF({ ...f, telegramChatId: e.target.value })} />
+            <span className="text-[10px] text-slate-400 block mt-1">Get your Chat ID by messaging @userinfobot or adding your bot to a group.</span>
           </Field>
 
           <div className="space-y-2 pt-2 border-t border-slate-100">
@@ -3066,6 +3110,25 @@ function UserForm({ user, initial, onClose, onSaved }) {
             <label className="flex items-center space-x-2 text-sm cursor-pointer select-none">
               <input type="checkbox" checked={!!f.dailyRosterEnabled} onChange={e => setF({ ...f, dailyRosterEnabled: e.target.checked })} className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 h-4 w-4" />
               <span className="text-slate-700 font-medium">Receive Daily 9:30 AM PDF Roster</span>
+            </label>
+          </div>
+
+          <div className="space-y-2 pt-2 border-t border-slate-100">
+            <div className="text-xs font-semibold text-indigo-500 uppercase tracking-wider mb-2">Telegram Configuration</div>
+            
+            <label className="flex items-center space-x-2 text-sm cursor-pointer select-none">
+              <input type="checkbox" checked={!!f.telegramOptIn} onChange={e => setF({ ...f, telegramOptIn: e.target.checked })} className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-4 w-4" />
+              <span className="text-slate-700 font-medium">Telegram Opt-In Confirmed</span>
+            </label>
+            
+            <label className="flex items-center space-x-2 text-sm cursor-pointer select-none">
+              <input type="checkbox" checked={!!f.telegramNotificationsEnabled} onChange={e => setF({ ...f, telegramNotificationsEnabled: e.target.checked })} className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-4 w-4" />
+              <span className="text-slate-700 font-medium">Receive Task & Lead Alerts on Telegram</span>
+            </label>
+            
+            <label className="flex items-center space-x-2 text-sm cursor-pointer select-none">
+              <input type="checkbox" checked={!!f.telegramDailyRosterEnabled} onChange={e => setF({ ...f, telegramDailyRosterEnabled: e.target.checked })} className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-4 w-4" />
+              <span className="text-slate-700 font-medium">Receive Daily PDF Roster on Telegram</span>
             </label>
           </div>
 

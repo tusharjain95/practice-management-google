@@ -13,6 +13,12 @@ import {
   sendWhatsAppTemplateMessage,
   logNotification
 } from '@/lib/whatsapp/client';
+import {
+  sendTaskAssignedTelegram,
+  sendTaskReassignedTelegram,
+  sendLeadAssignedTelegram,
+  sendLeadReassignedTelegram
+} from '@/lib/telegram/client';
 
 export const runtime = 'nodejs';
 export const preferredRegion = 'sin1';
@@ -755,6 +761,10 @@ async function handle(request, ctx) {
         whatsappOptIn: !!body.whatsappOptIn,
         whatsappNotificationsEnabled: !!body.whatsappNotificationsEnabled,
         dailyRosterEnabled: !!body.dailyRosterEnabled,
+        telegramChatId: body.telegramChatId || '',
+        telegramOptIn: !!body.telegramOptIn,
+        telegramNotificationsEnabled: !!body.telegramNotificationsEnabled,
+        telegramDailyRosterEnabled: !!body.telegramDailyRosterEnabled,
         createdAt: new Date().toISOString(),
         orgs: [{ orgId: me.activeOrgId, role: body.role || 'staff' }],
         permissions: body.permissions || {},
@@ -794,6 +804,10 @@ async function handle(request, ctx) {
       if (body.whatsappOptIn !== undefined) update.whatsappOptIn = !!body.whatsappOptIn;
       if (body.whatsappNotificationsEnabled !== undefined) update.whatsappNotificationsEnabled = !!body.whatsappNotificationsEnabled;
       if (body.dailyRosterEnabled !== undefined) update.dailyRosterEnabled = !!body.dailyRosterEnabled;
+      if (body.telegramChatId !== undefined) update.telegramChatId = body.telegramChatId;
+      if (body.telegramOptIn !== undefined) update.telegramOptIn = !!body.telegramOptIn;
+      if (body.telegramNotificationsEnabled !== undefined) update.telegramNotificationsEnabled = !!body.telegramNotificationsEnabled;
+      if (body.telegramDailyRosterEnabled !== undefined) update.telegramDailyRosterEnabled = !!body.telegramDailyRosterEnabled;
 
       if (body.role) {
         const targetOrgs = existingUser.orgs || [];
@@ -892,6 +906,20 @@ async function handle(request, ctx) {
       };
       await db.collection('leads').insertOne(lead);
       logActivity(db, me, 'create', 'lead', lead.id, { name: lead.name });
+
+      // Send Telegram notification if assigned to someone
+      if (assignedTo) {
+        db.collection('users').findOne({ id: assignedTo }).then(targetUser => {
+          if (targetUser) {
+            sendLeadAssignedTelegram(db, targetUser, lead).catch(err => {
+              console.error('[Telegram Notification Background Error] Lead Assigned:', err);
+            });
+          }
+        }).catch(err => {
+          console.error('[Notification Trigger Fetch User Error] Lead Assigned:', err);
+        });
+      }
+
       const { _id, ...safe } = lead;
       return json({ lead: safe });
     }
@@ -917,9 +945,26 @@ async function handle(request, ctx) {
         if (existingLead.assignedTo !== me.id) return json({ error: 'Forbidden' }, 403);
         delete body.createdBy;
       }
+      const oldAssignedTo = existingLead.assignedTo;
       body.updatedAt = new Date().toISOString();
       await db.collection('leads').updateOne({ id, orgId: me.activeOrgId }, { $set: body });
       logActivity(db, me, 'update', 'lead', id, body);
+
+      // Send Telegram lead reassignment notification if assignee changed
+      if (body.assignedTo && body.assignedTo !== oldAssignedTo) {
+        db.collection('users').findOne({ id: body.assignedTo }).then(targetUser => {
+          if (targetUser) {
+            db.collection('leads').findOne({ id, orgId: me.activeOrgId }).then(updatedLead => {
+              sendLeadReassignedTelegram(db, targetUser, updatedLead || existingLead).catch(err => {
+                console.error('[Telegram Notification Background Error] Lead Reassigned:', err);
+              });
+            });
+          }
+        }).catch(err => {
+          console.error('[Notification Trigger Fetch User Error] Lead Reassigned:', err);
+        });
+      }
+
       return json({ ok: true });
     }
     if (route.startsWith('leads/') && method === 'DELETE') {
@@ -1070,7 +1115,7 @@ async function handle(request, ctx) {
       await db.collection('tasks').insertOne(task);
       logActivity(db, me, 'create', 'task', task.id, { title: task.title });
 
-      // Send WhatsApp notifications asynchronously
+      // Send notifications asynchronously (WhatsApp & Telegram)
       try {
         if (assignees && assignees.length) {
           for (const uId of assignees) {
@@ -1080,14 +1125,17 @@ async function handle(request, ctx) {
                 sendTaskAssignedWhatsApp(db, targetUser, task).catch(err => {
                   console.error('[WhatsApp Notification Background Error] Task Assigned:', err);
                 });
+                sendTaskAssignedTelegram(db, targetUser, task).catch(err => {
+                  console.error('[Telegram Notification Background Error] Task Assigned:', err);
+                });
               }
             }).catch(err => {
-              console.error('[WhatsApp Trigger Fetch User Error] Task Assigned:', err);
+              console.error('[Notification Trigger Fetch User Error] Task Assigned:', err);
             });
           }
         }
       } catch (err) {
-        console.error('[WhatsApp Trigger Error] Task creation:', err);
+        console.error('[Notification Trigger Error] Task creation:', err);
       }
 
       const { _id, ...safe } = task;
@@ -1214,18 +1262,21 @@ async function handle(request, ctx) {
                     sendTaskReassignedWhatsApp(db, targetUser, updatedTask || existing).catch(err => {
                       console.error('[WhatsApp Notification Background Error] Task Reassigned:', err);
                     });
+                    sendTaskReassignedTelegram(db, targetUser, updatedTask || existing).catch(err => {
+                      console.error('[Telegram Notification Background Error] Task Reassigned:', err);
+                    });
                   }
                 }).catch(err => {
-                  console.error('[WhatsApp Trigger Fetch User Error] Task Reassigned:', err);
+                  console.error('[Notification Trigger Fetch User Error] Task Reassigned:', err);
                 });
               }
             }).catch(err => {
-              console.error('[WhatsApp Trigger Fetch Task Error] Task Reassigned:', err);
+              console.error('[Notification Trigger Fetch Task Error] Task Reassigned:', err);
             });
           }
         }
       } catch (err) {
-        console.error('[WhatsApp Trigger Error] Task update:', err);
+        console.error('[Notification Trigger Error] Task update:', err);
       }
 
       return json({ ok: true });
@@ -2456,6 +2507,12 @@ async function handle(request, ctx) {
           updatedAt: { $regex: '^' + yesterdayStr }
         }).toArray();
 
+        const openedYesterdayTasks = await db.collection('tasks').find({
+          orgId: { $in: orgIds },
+          createdBy: userId,
+          createdAt: { $regex: '^' + yesterdayStr }
+        }).toArray();
+
         const assignedYesterdayTasks = await db.collection('tasks').find({
           orgId: { $in: orgIds },
           $or: [{ assignedTo: userId }, { assignees: userId }],
@@ -2474,6 +2531,7 @@ async function handle(request, ctx) {
 
         const pdfData = {
           completedYesterdayCount: completedYesterdayTasks.length,
+          openedYesterdayCount: openedYesterdayTasks.length,
           assignedYesterdayCount: assignedYesterdayTasks.length,
           pendingCount: pendingTasks.length,
           overdueCount: overdueTasks.length,
