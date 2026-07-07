@@ -1,5 +1,6 @@
 import './globals.css';
 import { Toaster } from '@/components/ui/sonner';
+import { Providers } from './providers';
 
 export const metadata = {
   title: 'CA Practice Manager - Modern CRM for Chartered Accountants',
@@ -41,9 +42,10 @@ export default function RootLayout({ children }) {
         <link rel="apple-touch-icon" href="/icon-192.png" />
       </head>
       <body className="antialiased">
-        {children}
+        <Providers>
+          {children}
+        </Providers>
         <Toaster richColors position="top-right" />
-
       </body>
     </html>
   );

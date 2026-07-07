@@ -20,7 +20,8 @@ import {
   sendLeadAssignedTelegram,
   sendLeadReassignedTelegram,
   getBotUsername,
-  sendTestTelegram
+  sendTestTelegram,
+  sendDailyRosterTelegram
 } from '@/lib/telegram/client';
 
 export const runtime = 'nodejs';
@@ -641,6 +642,229 @@ async function handle(request, ctx) {
         return json({ ok: true, message: 'Test WhatsApp message sent successfully!' });
       } else {
         return json({ error: result.error || 'Failed to send test message. Check your Meta credentials and templates.' }, 500);
+      }
+    }
+
+    // -------- MANUALLY GENERATE AND SEND DAILY ROSTER --------
+    if (route === 'auth/send-manual-roster' && method === 'POST') {
+      const u = verifyAuth(request);
+      if (!u) return json({ error: 'Unauthorized' }, 401);
+
+      let targetUserId = null;
+      try {
+        const body = await request.json();
+        targetUserId = body?.targetUserId;
+      } catch {}
+
+      // Determine user to process
+      let targetUser = null;
+      if (targetUserId) {
+        // If passing targetUserId, caller must be admin or requesting themselves
+        if (u.role !== 'admin' && u.id !== targetUserId) {
+          return json({ error: 'Forbidden' }, 403);
+        }
+        targetUser = await db.collection('users').findOne({ id: targetUserId });
+      } else {
+        targetUser = await db.collection('users').findOne({ id: u.id });
+      }
+
+      if (!targetUser) {
+        return json({ error: 'User not found' }, 404);
+      }
+
+      // Check if they have daily roster enabled or opt-in configured
+      const hasWhatsApp = !!(targetUser.whatsappOptIn && targetUser.whatsappNumber);
+      const hasTelegram = !!(targetUser.telegramOptIn && targetUser.telegramChatId);
+
+      if (!hasWhatsApp && !hasTelegram) {
+        return json({ error: 'User has no configured and active notification channels (WhatsApp or Telegram)' }, 400);
+      }
+
+      // Setup Dates (IST / Asia/Kolkata timezone)
+      const today = new Date();
+      const options = { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' };
+      const formatter = new Intl.DateTimeFormat('en-CA', options); // returns YYYY-MM-DD
+      const dateStr = formatter.format(today);
+
+      // Yesterday date calculation
+      const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
+      const yesterdayStr = formatter.format(yesterday);
+
+      const orgIds = (targetUser.orgs || []).map(o => o.orgId);
+
+      // Fetch Yesterday's Performance Statistics
+      const completedYesterdayCount = await db.collection('tasks').countDocuments({
+        orgId: { $in: orgIds },
+        $or: [{ assignedTo: targetUser.id }, { assignees: targetUser.id }],
+        status: 'Completed',
+        updatedAt: { $regex: '^' + yesterdayStr }
+      });
+
+      const openedYesterdayCount = await db.collection('tasks').countDocuments({
+        orgId: { $in: orgIds },
+        createdBy: targetUser.id,
+        createdAt: { $regex: '^' + yesterdayStr }
+      });
+
+      const assignedYesterdayCount = await db.collection('tasks').countDocuments({
+        orgId: { $in: orgIds },
+        $or: [{ assignedTo: targetUser.id }, { assignees: targetUser.id }],
+        createdAt: { $regex: '^' + yesterdayStr }
+      });
+
+      // Current workload counts
+      const pendingTasks = await db.collection('tasks').find({
+        orgId: { $in: orgIds },
+        $or: [{ assignedTo: targetUser.id }, { assignees: targetUser.id }],
+        status: { $ne: 'Completed' }
+      }).toArray();
+
+      const pendingCount = pendingTasks.length;
+      const overdueCount = pendingTasks.filter(t => t.dueDate && t.dueDate < dateStr).length;
+      const dueTodayCount = pendingTasks.filter(t => t.dueDate === dateStr).length;
+
+      const performanceStats = {
+        completedYesterdayCount,
+        openedYesterdayCount,
+        assignedYesterdayCount,
+        pendingCount,
+        overdueCount,
+        dueTodayCount
+      };
+
+      // Generate dynamic secure JWT token that expires in 24 hours to secure PDF access
+      const APP_BASE_URL = process.env.APP_BASE_URL || 'http://localhost:3000';
+      const token = jwt.sign(
+        { userId: targetUser.id, date: dateStr },
+        JWT_SECRET,
+        { expiresIn: '1d' }
+      );
+
+      // Construct the public URL where external APIs or internal servers can fetch the PDF
+      const publicPdfUrl = `${APP_BASE_URL}/api/whatsapp/pdf-roster?token=${token}`;
+
+      let whatsappSent = false;
+      let telegramSent = false;
+      let whatsappError = null;
+      let telegramError = null;
+
+      // Send via WhatsApp if opt-in and number are set
+      if (hasWhatsApp) {
+        try {
+          await sendDailyRosterPdfWhatsApp(db, targetUser, dateStr, publicPdfUrl);
+          whatsappSent = true;
+        } catch (err) {
+          whatsappError = err.message;
+        }
+      }
+
+      // Send via Telegram if opt-in and chatId are set
+      if (hasTelegram) {
+        try {
+          await sendDailyRosterTelegram(db, targetUser, dateStr, publicPdfUrl, performanceStats);
+          telegramSent = true;
+        } catch (err) {
+          telegramError = err.message;
+        }
+      }
+
+      if (!whatsappSent && !telegramSent) {
+        return json({
+          error: 'Failed to send daily roster to any channel',
+          whatsappError,
+          telegramError
+        }, 500);
+      }
+
+      return json({
+        ok: true,
+        message: 'Daily roster manually generated and dispatched successfully!',
+        whatsapp: whatsappSent ? 'sent' : whatsappError ? `failed: ${whatsappError}` : 'not configured',
+        telegram: telegramSent ? 'sent' : telegramError ? `failed: ${telegramError}` : 'not configured'
+      });
+    }
+
+    // -------- WHATSAPP PDF ROSTER (public but JWT-secured) --------
+    if (route === 'whatsapp/pdf-roster' && method === 'GET') {
+      const token = url.searchParams.get('token');
+      if (!token) {
+        return new Response('Missing authorization token', { status: 400 });
+      }
+
+      try {
+        const decodedToken = jwt.verify(token, JWT_SECRET);
+        const { userId, date } = decodedToken;
+
+        const db = await getDb();
+        const user = await db.collection('users').findOne({ id: userId });
+        if (!user) {
+          return new Response('User not found', { status: 404 });
+        }
+
+        // Yesterday date calculation (IST)
+        const dObj = new Date(date);
+        const yesterdayObj = new Date(dObj.getTime() - 24 * 60 * 60 * 1000);
+        const options = { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' };
+        const formatter = new Intl.DateTimeFormat('en-CA', options);
+        const yesterdayStr = formatter.format(yesterdayObj);
+
+        const orgIds = (user.orgs || []).map(o => o.orgId);
+
+        // Fetch tasks
+        const completedYesterdayTasks = await db.collection('tasks').find({
+          orgId: { $in: orgIds },
+          $or: [{ assignedTo: userId }, { assignees: userId }],
+          status: 'Completed',
+          updatedAt: { $regex: '^' + yesterdayStr }
+        }).toArray();
+
+        const openedYesterdayTasks = await db.collection('tasks').find({
+          orgId: { $in: orgIds },
+          createdBy: userId,
+          createdAt: { $regex: '^' + yesterdayStr }
+        }).toArray();
+
+        const assignedYesterdayTasks = await db.collection('tasks').find({
+          orgId: { $in: orgIds },
+          $or: [{ assignedTo: userId }, { assignees: userId }],
+          createdAt: { $regex: '^' + yesterdayStr }
+        }).toArray();
+
+        const pendingTasks = await db.collection('tasks').find({
+          orgId: { $in: orgIds },
+          $or: [{ assignedTo: userId }, { assignees: userId }],
+          status: { $ne: 'Completed' }
+        }).sort({ dueDate: 1 }).toArray();
+
+        const overdueTasks = pendingTasks.filter(t => t.dueDate && t.dueDate < date);
+        const dueTodayTasks = pendingTasks.filter(t => t.dueDate === date);
+        const otherPendingTasks = pendingTasks.filter(t => !t.dueDate || t.dueDate > date);
+
+        const pdfData = {
+          completedYesterdayCount: completedYesterdayTasks.length,
+          openedYesterdayCount: openedYesterdayTasks.length,
+          assignedYesterdayCount: assignedYesterdayTasks.length,
+          pendingCount: pendingTasks.length,
+          overdueCount: overdueTasks.length,
+          dueTodayCount: dueTodayTasks.length,
+          overdueTasks,
+          dueTodayTasks,
+          pendingTasks: otherPendingTasks
+        };
+
+        const pdfBuffer = await generateRosterPdfBuffer(user.name, date, pdfData);
+
+        return new Response(pdfBuffer, {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/pdf',
+            'Content-Disposition': `inline; filename="roster_${user.name.toLowerCase().replace(/[^a-z0-9]/g, '_')}_${date}.pdf"`,
+            'Content-Length': pdfBuffer.length.toString()
+          }
+        });
+      } catch (err) {
+        console.error('[PDF Roster Error]', err);
+        return new Response(`Unauthorized or expired token: ${err.message}`, { status: 401 });
       }
     }
 
@@ -2543,90 +2767,6 @@ async function handle(request, ctx) {
       
       logActivity(db, me, 'clear_old_data', 'backup', 'clear', { asOnDate, categories, summary });
       return json({ ok: true, summary });
-    }
-
-    // -------- WHATSAPP PDF ROSTER (public but JWT-secured) --------
-    if (route === 'whatsapp/pdf-roster' && method === 'GET') {
-      const token = url.searchParams.get('token');
-      if (!token) {
-        return new Response('Missing authorization token', { status: 400 });
-      }
-
-      try {
-        const decoded = jwt.verify(token, JWT_SECRET);
-        const { userId, date } = decoded;
-
-        const db = await getDb();
-        const user = await db.collection('users').findOne({ id: userId });
-        if (!user) {
-          return new Response('User not found', { status: 404 });
-        }
-
-        // Yesterday date calculation (IST)
-        const dObj = new Date(date);
-        const yesterdayObj = new Date(dObj.getTime() - 24 * 60 * 60 * 1000);
-        const options = { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' };
-        const formatter = new Intl.DateTimeFormat('en-CA', options);
-        const yesterdayStr = formatter.format(yesterdayObj);
-
-        const orgIds = (user.orgs || []).map(o => o.orgId);
-
-        // Fetch tasks
-        const completedYesterdayTasks = await db.collection('tasks').find({
-          orgId: { $in: orgIds },
-          $or: [{ assignedTo: userId }, { assignees: userId }],
-          status: 'Completed',
-          updatedAt: { $regex: '^' + yesterdayStr }
-        }).toArray();
-
-        const openedYesterdayTasks = await db.collection('tasks').find({
-          orgId: { $in: orgIds },
-          createdBy: userId,
-          createdAt: { $regex: '^' + yesterdayStr }
-        }).toArray();
-
-        const assignedYesterdayTasks = await db.collection('tasks').find({
-          orgId: { $in: orgIds },
-          $or: [{ assignedTo: userId }, { assignees: userId }],
-          createdAt: { $regex: '^' + yesterdayStr }
-        }).toArray();
-
-        const pendingTasks = await db.collection('tasks').find({
-          orgId: { $in: orgIds },
-          $or: [{ assignedTo: userId }, { assignees: userId }],
-          status: { $ne: 'Completed' }
-        }).sort({ dueDate: 1 }).toArray();
-
-        const overdueTasks = pendingTasks.filter(t => t.dueDate && t.dueDate < date);
-        const dueTodayTasks = pendingTasks.filter(t => t.dueDate === date);
-        const otherPendingTasks = pendingTasks.filter(t => !t.dueDate || t.dueDate > date);
-
-        const pdfData = {
-          completedYesterdayCount: completedYesterdayTasks.length,
-          openedYesterdayCount: openedYesterdayTasks.length,
-          assignedYesterdayCount: assignedYesterdayTasks.length,
-          pendingCount: pendingTasks.length,
-          overdueCount: overdueTasks.length,
-          dueTodayCount: dueTodayTasks.length,
-          overdueTasks,
-          dueTodayTasks,
-          pendingTasks: otherPendingTasks
-        };
-
-        const pdfBuffer = await generateRosterPdfBuffer(user.name, date, pdfData);
-
-        return new Response(pdfBuffer, {
-          status: 200,
-          headers: {
-            'Content-Type': 'application/pdf',
-            'Content-Disposition': `inline; filename="roster_${user.name.toLowerCase().replace(/[^a-z0-9]/g, '_')}_${date}.pdf"`,
-            'Content-Length': pdfBuffer.length.toString()
-          }
-        });
-      } catch (err) {
-        console.error('[PDF Roster Error]', err);
-        return new Response(`Unauthorized or expired token: ${err.message}`, { status: 401 });
-      }
     }
 
     // -------- WHATSAPP ADMIN TEST ENDPOINT --------

@@ -9,7 +9,7 @@ import {
   FileDown, ChevronRight, Wallet, Receipt, Palette, Bell,
   IndianRupee, Building2, ChevronLeft, RotateCcw, Upload, KeyRound,
   BarChart3, ClipboardCheck, ShieldCheck, Database, DownloadCloud, UploadCloud,
-  MessageSquare, Menu, X, ArrowUpDown, ArrowUp, ArrowDown, Send,
+  MessageSquare, Menu, X, ArrowUpDown, ArrowUp, ArrowDown, Send, Loader2,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -841,6 +841,29 @@ function MyProfileDialog({ user, onUserUpdated, onClose }) {
   const [saving, setSaving] = useState(false);
   const [testingTelegram, setTestingTelegram] = useState(false);
   const [testingWhatsApp, setTestingWhatsApp] = useState(false);
+  const [sendingRoster, setSendingRoster] = useState(false);
+
+  async function sendManualRoster() {
+    if (!f.telegramChatId && !f.whatsappNumber) {
+      toast.error('Please configure at least one active channel (Telegram or WhatsApp) first.');
+      return;
+    }
+    setSendingRoster(true);
+    try {
+      const res = await call('auth/send-manual-roster', {
+        method: 'POST',
+      });
+      if (res.ok) {
+        toast.success(res.message || 'Daily roster generated and sent successfully!');
+      } else {
+        toast.error(res.error || 'Failed to send daily roster');
+      }
+    } catch (e) {
+      toast.error(e.message || 'Error occurred while sending daily roster');
+    } finally {
+      setSendingRoster(false);
+    }
+  }
 
   async function testTelegram() {
     if (!f.telegramChatId) {
@@ -1087,6 +1110,36 @@ function MyProfileDialog({ user, onUserUpdated, onClose }) {
                 <span className="text-slate-700 font-medium">Receive Daily PDF Roster on WhatsApp</span>
               </label>
             </div>
+          </div>
+
+          <Separator />
+
+          {/* Manual Roster Dispatch */}
+          <div className="space-y-3 p-3 bg-slate-50 border border-slate-200/60 rounded-lg">
+            <div className="text-xs font-semibold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+              <FileDown className="w-3.5 h-3.5 text-blue-600" /> On-Demand Roster Generator
+            </div>
+            <p className="text-[11px] text-slate-500 leading-relaxed">
+              Generate your daily performance and task roster PDF right now and send it to your configured active communication channels (WhatsApp / Telegram).
+            </p>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={sendManualRoster}
+              disabled={sendingRoster}
+              className="w-full text-xs font-semibold bg-white border-blue-200 text-blue-700 hover:bg-blue-50/50 flex items-center justify-center gap-1.5"
+            >
+              {sendingRoster ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" /> Generating & Dispatching...
+                </>
+              ) : (
+                <>
+                  <Send className="w-3.5 h-3.5" /> Generate & Send Roster Now
+                </>
+              )}
+            </Button>
           </div>
 
           <Separator />
@@ -3222,6 +3275,34 @@ function UserForm({ user, initial, onClose, onSaved }) {
     }
     return user ? [user.activeOrgId] : [];
   });
+  const [sendingRoster, setSendingRoster] = useState(false);
+
+  async function sendManualRoster() {
+    if (!initial?.id) {
+      toast.error('Save the user first before manually generating the roster.');
+      return;
+    }
+    if (!f.telegramChatId && !f.whatsappNumber) {
+      toast.error('This user has no active channels (Telegram or WhatsApp) configured.');
+      return;
+    }
+    setSendingRoster(true);
+    try {
+      const res = await call('auth/send-manual-roster', {
+        method: 'POST',
+        body: { targetUserId: initial.id }
+      });
+      if (res.ok) {
+        toast.success(res.message || 'Daily roster generated and sent successfully!');
+      } else {
+        toast.error(res.error || 'Failed to send daily roster');
+      }
+    } catch (e) {
+      toast.error(e.message || 'Error occurred while sending daily roster');
+    } finally {
+      setSendingRoster(false);
+    }
+  }
 
   useEffect(() => {
     async function fetchOrgs() {
@@ -3386,6 +3467,35 @@ function UserForm({ user, initial, onClose, onSaved }) {
               <span className="text-slate-700 font-medium">Receive Daily PDF Roster on Telegram</span>
             </label>
           </div>
+
+          {initial && (
+            <div className="space-y-3 p-3 bg-slate-50 border border-slate-200/60 rounded-lg">
+              <div className="text-xs font-semibold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                <FileDown className="w-3.5 h-3.5 text-blue-600" /> On-Demand Roster Generator
+              </div>
+              <p className="text-[11px] text-slate-500 leading-relaxed">
+                Generate this staff member&apos;s daily performance & task roster PDF right now and send it to their active channels.
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={sendManualRoster}
+                disabled={sendingRoster}
+                className="w-full text-xs font-semibold bg-white border-blue-200 text-blue-700 hover:bg-blue-50/50 flex items-center justify-center gap-1.5"
+              >
+                {sendingRoster ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" /> Generating & Dispatching...
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-3.5 h-3.5" /> Generate & Send Roster Now
+                  </>
+                )}
+              </Button>
+            </div>
+          )}
 
           <DialogFooter className="pt-2">
             <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
