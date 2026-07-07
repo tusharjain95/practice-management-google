@@ -8,6 +8,7 @@ import path from 'path';
 import {
   sendTaskAssignedWhatsApp,
   sendTaskReassignedWhatsApp,
+  sendTaskDiscussionWhatsApp,
   sendDailyRosterPdfWhatsApp,
   generateRosterPdfBuffer,
   sendWhatsAppTemplateMessage,
@@ -17,6 +18,7 @@ import {
 import {
   sendTaskAssignedTelegram,
   sendTaskReassignedTelegram,
+  sendTaskDiscussionTelegram,
   sendLeadAssignedTelegram,
   sendLeadReassignedTelegram,
   getBotUsername,
@@ -1430,6 +1432,22 @@ async function handle(request, ctx) {
             });
           }
         }
+
+        // Send discussion notification if needs discussion on creation
+        if (task.needsDiscussion && task.discussionWith) {
+          db.collection('users').findOne({ id: task.discussionWith }).then(targetUser => {
+            if (targetUser) {
+              sendTaskDiscussionWhatsApp(db, targetUser, task).catch(err => {
+                console.error('[WhatsApp Notification Background Error] Task Discussion:', err);
+              });
+              sendTaskDiscussionTelegram(db, targetUser, task).catch(err => {
+                console.error('[Telegram Notification Background Error] Task Discussion:', err);
+              });
+            }
+          }).catch(err => {
+            console.error('[Notification Trigger Fetch User Error] Task Discussion:', err);
+          });
+        }
       } catch (err) {
         console.error('[Notification Trigger Error] Task creation:', err);
       }
@@ -1572,7 +1590,43 @@ async function handle(request, ctx) {
           }
         }
       } catch (err) {
-        console.error('[Notification Trigger Error] Task update:', err);
+        console.error('[Notification Trigger Error] Task update reassignment:', err);
+      }
+
+      // Check for Discussion Assignment
+      try {
+        const isDiscussionActive = updatedFields.needsDiscussion === true || (updatedFields.needsDiscussion === undefined && existing.needsDiscussion === true);
+        if (isDiscussionActive) {
+          const prevDiscussionWith = existing.discussionWith || '';
+          const newDiscussionWith = updatedFields.discussionWith !== undefined ? (updatedFields.discussionWith || '') : prevDiscussionWith;
+          
+          // Trigger if:
+          // 1. It is newly marked as needing discussion
+          // 2. Or the manager to discuss with was changed
+          const isNewlyAssignedForDiscussion = (updatedFields.needsDiscussion === true && !existing.needsDiscussion) || 
+            (newDiscussionWith && newDiscussionWith !== prevDiscussionWith);
+
+          if (isNewlyAssignedForDiscussion && newDiscussionWith) {
+            db.collection('tasks').findOne({ id, orgId: me.activeOrgId }).then(updatedTask => {
+              db.collection('users').findOne({ id: newDiscussionWith }).then(targetUser => {
+                if (targetUser) {
+                  sendTaskDiscussionWhatsApp(db, targetUser, updatedTask || existing).catch(err => {
+                    console.error('[WhatsApp Notification Background Error] Task Discussion Update:', err);
+                  });
+                  sendTaskDiscussionTelegram(db, targetUser, updatedTask || existing).catch(err => {
+                    console.error('[Telegram Notification Background Error] Task Discussion Update:', err);
+                  });
+                }
+              }).catch(err => {
+                console.error('[Notification Trigger Fetch User Error] Task Discussion Update:', err);
+              });
+            }).catch(err => {
+              console.error('[Notification Trigger Fetch Task Error] Task Discussion Update:', err);
+            });
+          }
+        }
+      } catch (err) {
+        console.error('[Notification Trigger Error] Task discussion update:', err);
       }
 
       return json({ ok: true });
