@@ -72,6 +72,138 @@ function writeDbFile(data) {
   }
 }
 
+function getNestedValue(obj, key) {
+  if (obj === undefined || obj === null) return undefined;
+  if (!key.includes('.')) {
+    return obj[key];
+  }
+  const parts = key.split('.');
+  let current = obj;
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    if (current === undefined || current === null) return undefined;
+    if (Array.isArray(current)) {
+      const restPath = parts.slice(i).join('.');
+      const results = [];
+      for (const item of current) {
+        const val = getNestedValue(item, restPath);
+        if (val !== undefined) {
+          if (Array.isArray(val)) {
+            results.push(...val);
+          } else {
+            results.push(val);
+          }
+        }
+      }
+      return results.length > 0 ? results : undefined;
+    }
+    current = current[part];
+  }
+  return current;
+}
+
+function evaluateValueMatch(docValue, queryValue) {
+  if (queryValue instanceof RegExp || (queryValue && typeof queryValue.test === 'function')) {
+    if (Array.isArray(docValue)) {
+      return docValue.some(v => typeof v === 'string' && queryValue.test(v));
+    }
+    return typeof docValue === 'string' && queryValue.test(docValue);
+  }
+
+  if (Array.isArray(queryValue)) {
+    if (Array.isArray(docValue)) {
+      if (docValue.length !== queryValue.length) return false;
+      return docValue.every((v, i) => v === queryValue[i]);
+    }
+    return false;
+  }
+
+  if (queryValue && typeof queryValue === 'object') {
+    const keys = Object.keys(queryValue);
+    const hasOp = keys.some(k => k.startsWith('$'));
+    if (hasOp) {
+      for (const op of keys) {
+        const val = queryValue[op];
+        if (op === '$ne') {
+          if (Array.isArray(docValue)) {
+            if (docValue.includes(val)) return false;
+          } else {
+            if (docValue === val) return false;
+          }
+        } else if (op === '$eq') {
+          if (Array.isArray(docValue)) {
+            if (!docValue.includes(val)) return false;
+          } else {
+            if (docValue !== val) return false;
+          }
+        } else if (op === '$gt') {
+          if (Array.isArray(docValue)) {
+            if (!docValue.some(v => v > val)) return false;
+          } else {
+            if (!(docValue > val)) return false;
+          }
+        } else if (op === '$gte') {
+          if (Array.isArray(docValue)) {
+            if (!docValue.some(v => v >= val)) return false;
+          } else {
+            if (!(docValue >= val)) return false;
+          }
+        } else if (op === '$lt') {
+          if (Array.isArray(docValue)) {
+            if (!docValue.some(v => v < val)) return false;
+          } else {
+            if (!(docValue < val)) return false;
+          }
+        } else if (op === '$lte') {
+          if (Array.isArray(docValue)) {
+            if (!docValue.some(v => v <= val)) return false;
+          } else {
+            if (!(docValue <= val)) return false;
+          }
+        } else if (op === '$in') {
+          if (!Array.isArray(val)) return false;
+          if (Array.isArray(docValue)) {
+            if (!docValue.some(v => val.includes(v))) return false;
+          } else {
+            if (!val.includes(docValue)) return false;
+          }
+        } else if (op === '$nin') {
+          if (!Array.isArray(val)) return false;
+          if (Array.isArray(docValue)) {
+            if (docValue.some(v => val.includes(v))) return false;
+          } else {
+            if (val.includes(docValue)) return false;
+          }
+        } else if (op === '$regex') {
+          const options = queryValue['$options'] || '';
+          try {
+            const rx = new RegExp(val, options);
+            if (Array.isArray(docValue)) {
+              if (!docValue.some(v => typeof v === 'string' && rx.test(v))) return false;
+            } else {
+              if (typeof docValue !== 'string' || !rx.test(docValue)) return false;
+            }
+          } catch {
+            return false;
+          }
+        } else if (op === '$options') {
+          // Handled in $regex
+          continue;
+        } else if (op === '$exists') {
+          const exists = docValue !== undefined;
+          if (exists !== !!val) return false;
+        }
+      }
+      return true;
+    }
+  }
+
+  if (Array.isArray(docValue)) {
+    return docValue.includes(queryValue);
+  }
+  return docValue === queryValue;
+}
+
 function matchQuery(doc, query) {
   if (!query) return true;
   for (const key of Object.keys(query)) {
@@ -89,34 +221,22 @@ function matchQuery(doc, query) {
       continue;
     }
     
-    const docValue = doc[key];
-    const queryValue = query[key];
-    
-    if (queryValue && typeof queryValue === 'object' && !(queryValue instanceof RegExp)) {
-      for (const op of Object.keys(queryValue)) {
-        const val = queryValue[op];
-        if (op === '$ne') {
-          if (docValue === val) return false;
-        } else if (op === '$eq') {
-          if (docValue !== val) return false;
-        } else if (op === '$gt') {
-          if (!(docValue > val)) return false;
-        } else if (op === '$gte') {
-          if (!(docValue >= val)) return false;
-        } else if (op === '$lt') {
-          if (!(docValue < val)) return false;
-        } else if (op === '$lte') {
-          if (!(docValue <= val)) return false;
-        } else if (op === '$in') {
-          if (!Array.isArray(val) || !val.includes(docValue)) return false;
-        } else if (op === '$nin') {
-          if (!Array.isArray(val) || val.includes(docValue)) return false;
+    if (key === '$and') {
+      const andArray = query[key];
+      if (!Array.isArray(andArray)) continue;
+      for (const subQuery of andArray) {
+        if (!matchQuery(doc, subQuery)) {
+          return false;
         }
       }
-    } else if (queryValue instanceof RegExp || (queryValue && typeof queryValue.test === 'function')) {
-      if (typeof docValue !== 'string' || !queryValue.test(docValue)) return false;
-    } else {
-      if (docValue !== queryValue) return false;
+      continue;
+    }
+    
+    const docValue = getNestedValue(doc, key);
+    const queryValue = query[key];
+    
+    if (!evaluateValueMatch(docValue, queryValue)) {
+      return false;
     }
   }
   return true;
@@ -135,8 +255,31 @@ function applyUpdate(doc, updateSpec) {
     for (const k of Object.keys(updateSpec.$pull)) {
       const valToPull = updateSpec.$pull[k];
       if (Array.isArray(doc[k])) {
-        doc[k] = doc[k].filter(item => item !== valToPull);
+        doc[k] = doc[k].filter(item => {
+          if (valToPull && typeof valToPull === 'object') {
+            const keys = Object.keys(valToPull);
+            const hasOp = keys.some(key => key.startsWith('$'));
+            if (hasOp) {
+              return !evaluateValueMatch(item, valToPull);
+            } else {
+              if (item && typeof item === 'object') {
+                return !matchQuery(item, valToPull);
+              }
+            }
+          }
+          return item !== valToPull;
+        });
       }
+    }
+  }
+
+  if (updateSpec.$push) {
+    for (const k of Object.keys(updateSpec.$push)) {
+      const valToPush = updateSpec.$push[k];
+      if (!Array.isArray(doc[k])) {
+        doc[k] = [];
+      }
+      doc[k].push(valToPush);
     }
   }
   
