@@ -334,6 +334,60 @@ function getMockDb() {
   return { collection };
 }
 
+async function ensureIndexes(db) {
+  if (cached.indexesCreated) return;
+  try {
+    // Check if real MongoDB client is used
+    if (!MONGO_URL) return;
+    
+    await Promise.all([
+      db.collection('users').createIndex({ id: 1 }, { unique: true }).catch(() => {}),
+      db.collection('users').createIndex({ email: 1 }).catch(() => {}),
+      db.collection('users').createIndex({ "orgs.orgId": 1 }).catch(() => {}),
+      
+      db.collection('leads').createIndex({ id: 1 }, { unique: true }).catch(() => {}),
+      db.collection('leads').createIndex({ orgId: 1 }).catch(() => {}),
+      db.collection('leads').createIndex({ assignedTo: 1 }).catch(() => {}),
+      db.collection('leads').createIndex({ status: 1 }).catch(() => {}),
+      db.collection('leads').createIndex({ followUpDate: 1 }).catch(() => {}),
+
+      db.collection('tasks').createIndex({ id: 1 }, { unique: true }).catch(() => {}),
+      db.collection('tasks').createIndex({ orgId: 1 }).catch(() => {}),
+      db.collection('tasks').createIndex({ assignedTo: 1 }).catch(() => {}),
+      db.collection('tasks').createIndex({ status: 1 }).catch(() => {}),
+      db.collection('tasks').createIndex({ dueDate: 1 }).catch(() => {}),
+
+      db.collection('clients').createIndex({ id: 1 }, { unique: true }).catch(() => {}),
+      db.collection('clients').createIndex({ orgId: 1 }).catch(() => {}),
+
+      db.collection('invoices').createIndex({ id: 1 }, { unique: true }).catch(() => {}),
+      db.collection('invoices').createIndex({ orgId: 1 }).catch(() => {}),
+      db.collection('invoices').createIndex({ clientId: 1 }).catch(() => {}),
+      db.collection('invoices').createIndex({ status: 1 }).catch(() => {}),
+
+      db.collection('payments').createIndex({ id: 1 }, { unique: true }).catch(() => {}),
+      db.collection('payments').createIndex({ orgId: 1 }).catch(() => {}),
+      db.collection('payments').createIndex({ invoiceId: 1 }).catch(() => {}),
+      db.collection('payments').createIndex({ clientId: 1 }).catch(() => {}),
+
+      db.collection('settings').createIndex({ id: 1, orgId: 1 }).catch(() => {}),
+
+      db.collection('quotations').createIndex({ id: 1 }, { unique: true }).catch(() => {}),
+      db.collection('quotations').createIndex({ orgId: 1 }).catch(() => {}),
+
+      db.collection('activity_logs').createIndex({ orgId: 1 }).catch(() => {}),
+      db.collection('activity_logs').createIndex({ createdAt: -1 }).catch(() => {}),
+
+      db.collection('compliances').createIndex({ id: 1 }, { unique: true }).catch(() => {}),
+      db.collection('whatsapp_notifications').createIndex({ orgId: 1 }).catch(() => {})
+    ]);
+    cached.indexesCreated = true;
+    console.log('[AI Studio] MongoDB database indexes ensured successfully.');
+  } catch (err) {
+    console.error('[AI Studio] Failed to ensure database indexes:', err);
+  }
+}
+
 async function getDb() {
   if (cached.db) return cached.db;
   if (!MONGO_URL) {
@@ -351,6 +405,7 @@ async function getDb() {
   try {
     cached.db = await cached.promise;
     await seedAdmin(cached.db);
+    await ensureIndexes(cached.db);
     return cached.db;
   } catch (err) {
     console.warn('[AI Studio] Failed to connect to MongoDB, using JSON-fallback mock db.', err);
@@ -1308,18 +1363,18 @@ async function handle(request, ctx) {
     // -------- TASKS --------
     if (route === 'tasks' && method === 'GET') {
       const filter = { orgId: me.activeOrgId };
+      const andClauses = [];
+
       if (me.role === 'staff') {
-        filter.$and = [
-          { orgId: me.activeOrgId },
-          {
-            $or: [
-              { assignedTo: me.id },
-              { assignees: me.id },
-              { needsDiscussion: true, discussionWith: me.id },
-            ]
-          }
-        ];
+        andClauses.push({
+          $or: [
+            { assignedTo: me.id },
+            { assignees: me.id },
+            { needsDiscussion: true, discussionWith: me.id },
+          ]
+        });
       }
+
       const id = url.searchParams.get('id');
       if (id) {
         filter.id = id;
@@ -1329,28 +1384,46 @@ async function handle(request, ctx) {
         const priority = url.searchParams.get('priority');
         const category = url.searchParams.get('category');
         const discussion = url.searchParams.get('discussion');
+        const q = url.searchParams.get('q');
+
         if (status) {
           if (status === 'action') {
-            filter.status = { $ne: 'Completed' };
+            andClauses.push({ status: { $ne: 'Completed' } });
           } else if (status === 'overdue') {
             const todayStr = new Date().toISOString().slice(0, 10);
-            filter.status = { $ne: 'Completed' };
-            filter.dueDate = { $ne: '', $lt: todayStr };
+            andClauses.push({ status: { $ne: 'Completed' }, dueDate: { $ne: '', $lt: todayStr } });
           } else {
-            filter.status = status;
+            andClauses.push({ status });
           }
         }
         if (assignedTo) {
-          if (filter.$and) {
-            filter.$and.push({ $or: [{ assignedTo }, { assignees: assignedTo }] });
-          } else {
-            filter.$or = [{ assignedTo }, { assignees: assignedTo }];
-          }
+          andClauses.push({ $or: [{ assignedTo }, { assignees: assignedTo }] });
         }
-        if (priority) filter.priority = priority;
-        if (category) filter.category = category;
-        if (discussion === 'me') { filter.needsDiscussion = true; filter.discussionWith = me.id; }
-        else if (discussion === 'true') filter.needsDiscussion = true;
+        if (priority) {
+          andClauses.push({ priority });
+        }
+        if (category) {
+          andClauses.push({ category });
+        }
+        if (discussion === 'me') {
+          andClauses.push({ needsDiscussion: true, discussionWith: me.id });
+        } else if (discussion === 'true') {
+          andClauses.push({ needsDiscussion: true });
+        }
+        if (q && q.trim()) {
+          const rx = new RegExp(q.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+          andClauses.push({
+            $or: [
+              { title: rx },
+              { description: rx },
+              { clientName: rx }
+            ]
+          });
+        }
+      }
+
+      if (andClauses.length > 0) {
+        filter.$and = andClauses;
       }
 
       const { page, limit } = getPaginationParams(url.searchParams);

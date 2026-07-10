@@ -1,6 +1,12 @@
 import './globals.css';
 import { Toaster } from '@/components/ui/sonner';
 import { Providers } from './providers';
+import { Inter } from 'next/font/google';
+
+const inter = Inter({
+  subsets: ['latin'],
+  display: 'swap',
+});
 
 export const metadata = {
   title: 'CA Practice Manager - Modern CRM for Chartered Accountants',
@@ -16,6 +22,7 @@ export const metadata = {
       { url: '/favicon.ico', sizes: 'any' },
       { url: '/icon-192.png', type: 'image/png', sizes: '192x192' },
       { url: '/icon-512.png', type: 'image/png', sizes: '512x512' },
+      { url: '/icon-192.png', sizes: '192x192', type: 'image/png' },
     ],
     apple: [{ url: '/icon-192.png', sizes: '192x192', type: 'image/png' }],
   },
@@ -41,7 +48,7 @@ export default function RootLayout({ children }) {
         <meta name="apple-mobile-web-app-title" content="CA Manager" />
         <link rel="apple-touch-icon" href="/icon-192.png" />
       </head>
-      <body className="antialiased">
+      <body className={`${inter.className} antialiased min-h-screen`}>
         <Providers>
           {children}
         </Providers>

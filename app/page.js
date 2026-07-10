@@ -256,7 +256,12 @@ function App() {
             ...(localStorage.getItem('ca_active_org_id') ? { 'x-org-id': localStorage.getItem('ca_active_org_id') } : {}),
           }
         })
-        .then(res => res.json())
+        .then(res => {
+          if (!res.ok) {
+            throw new Error(`HTTP ${res.status}`);
+          }
+          return res.json();
+        })
         .then(data => {
           if (data.user) {
             localStorage.setItem('ca_user', JSON.stringify(data.user));
@@ -264,10 +269,16 @@ function App() {
             if (data.user.activeOrgId) {
               localStorage.setItem('ca_active_org_id', data.user.activeOrgId);
             }
+          } else {
+            logout();
           }
         })
-        .catch(() => {});
-      } catch {}
+        .catch(() => {
+          logout();
+        });
+      } catch {
+        logout();
+      }
     }
     setBooting(false);
   }, []);
@@ -328,23 +339,23 @@ function Login({ onLogin }) {
   }
 
   return (
-    <div className="min-h-screen flex bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
-      <div className="hidden lg:flex flex-1 items-center justify-center p-12 relative overflow-hidden">
-        <div className="absolute inset-0 opacity-10">
-          <div className="absolute -top-24 -left-24 w-96 h-96 bg-indigo-500 rounded-full blur-3xl" />
-          <div className="absolute bottom-0 right-0 w-96 h-96 bg-emerald-500 rounded-full blur-3xl" />
+    <div className="min-h-screen flex bg-slate-50/50">
+      <div className="hidden lg:flex flex-1 items-center justify-center p-12 relative overflow-hidden bg-indigo-50/20 border-r border-slate-100/80">
+        <div className="absolute inset-0 opacity-20">
+          <div className="absolute -top-24 -left-24 w-[500px] h-[500px] bg-indigo-300 rounded-full blur-3xl animate-pulse duration-4000" />
+          <div className="absolute bottom-0 right-0 w-[500px] h-[500px] bg-emerald-200 rounded-full blur-3xl animate-pulse duration-4000" />
         </div>
-        <div className="relative z-10 max-w-lg text-white">
+        <div className="relative z-10 max-w-lg text-slate-800">
           <div className="flex items-center gap-3 mb-8">
-            <div className="w-12 h-12 rounded-xl bg-indigo-500 flex items-center justify-center">
-              <Briefcase className="w-7 h-7" />
+            <div className="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center shadow-md">
+              <Briefcase className="w-5 h-5 text-white" />
             </div>
-            <span className="text-2xl font-bold tracking-tight">CA Practice Manager</span>
+            <span className="text-xl font-bold tracking-tight text-slate-900">CA Practice Manager</span>
           </div>
-          <h1 className="text-5xl font-bold leading-tight mb-6">
-            The modern OS for your <span className="text-indigo-400">CA firm</span>.
+          <h1 className="text-4xl font-extrabold leading-tight tracking-tight mb-6 text-slate-900">
+            The modern OS for your <span className="text-indigo-600">CA firm</span>.
           </h1>
-          <p className="text-lg text-slate-300 mb-8">
+          <p className="text-sm text-slate-600 mb-8 leading-relaxed">
             Replace spreadsheets and WhatsApp chaos. Manage leads, assign tasks, generate
             beautiful PDF quotations — all in one place.
           </p>
@@ -355,41 +366,41 @@ function Login({ onLogin }) {
               { icon: FileText, t: 'PDF Quotations', d: 'Auto-numbered, branded' },
               { icon: FileSpreadsheet, t: 'Excel Exports', d: 'Filter-aware downloads' },
             ].map(({ icon: Icon, t, d }) => (
-              <div key={t} className="p-4 rounded-lg bg-white/5 border border-white/10 backdrop-blur">
-                <Icon className="w-5 h-5 text-indigo-300 mb-2" />
-                <div className="font-semibold">{t}</div>
-                <div className="text-xs text-slate-400">{d}</div>
+              <div key={t} className="p-4 rounded-xl bg-white border border-slate-100 shadow-sm transition-all hover:shadow-md hover:-translate-y-0.5">
+                <Icon className="w-5 h-5 text-indigo-600 mb-2" />
+                <div className="font-semibold text-slate-900 text-sm">{t}</div>
+                <div className="text-xs text-slate-500 mt-0.5">{d}</div>
               </div>
             ))}
           </div>
         </div>
       </div>
       <div className="flex-1 flex items-center justify-center p-6">
-        <Card className="w-full max-w-md shadow-2xl border-slate-700 bg-white">
+        <Card className="w-full max-w-md shadow-xl border-slate-100 bg-white p-2">
           <CardHeader>
-            <CardTitle className="text-2xl">Sign in</CardTitle>
-            <CardDescription>Access your CA practice dashboard</CardDescription>
+            <CardTitle className="text-2xl font-bold tracking-tight text-slate-900">Sign in</CardTitle>
+            <CardDescription className="text-slate-500">Access your CA practice dashboard</CardDescription>
           </CardHeader>
           <CardContent>
             <form onSubmit={submit} className="space-y-4">
               <div>
-                <Label htmlFor="email">Email</Label>
-                <Input id="email" type="email" value={email} onChange={e => setEmail(e.target.value)} required />
+                <Label htmlFor="email" className="text-slate-700 text-xs font-semibold mb-1 block">Email</Label>
+                <Input id="email" type="email" value={email} onChange={e => setEmail(e.target.value)} required className="shadow-sm" />
               </div>
               <div>
-                <Label htmlFor="password">Password</Label>
-                <Input id="password" type="password" value={password} onChange={e => setPassword(e.target.value)} required />
+                <Label htmlFor="password" className="text-slate-700 text-xs font-semibold mb-1 block">Password</Label>
+                <Input id="password" type="password" value={password} onChange={e => setPassword(e.target.value)} required className="shadow-sm" />
               </div>
-              <Button type="submit" className="w-full" disabled={loading}>
+              <Button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-medium shadow-sm transition-all py-2 cursor-pointer mt-2" disabled={loading}>
                 {loading ? 'Signing in...' : 'Sign In'}
               </Button>
             </form>
-            <Separator className="my-6" />
-            <div className="text-xs text-slate-500 space-y-1">
-              <div className="font-semibold text-slate-700 mb-2">Demo credentials:</div>
-              <div><span className="font-mono">admin@ca.com / admin123</span> — Admin</div>
-              <div><span className="font-mono">manager@ca.com / manager123</span> — Manager</div>
-              <div><span className="font-mono">staff@ca.com / staff123</span> — Staff</div>
+            <Separator className="my-6 border-slate-100" />
+            <div className="text-xs text-slate-500 space-y-1 bg-slate-50 p-3.5 rounded-lg border border-slate-100 shadow-sm">
+              <div className="font-semibold text-slate-700 mb-2 uppercase tracking-wider text-[10px]">Demo credentials:</div>
+              <div className="flex justify-between items-center"><span className="font-mono text-slate-600">admin@ca.com / admin123</span> <span className="text-[10px] bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded font-medium">Admin</span></div>
+              <div className="flex justify-between items-center"><span className="font-mono text-slate-600">manager@ca.com / manager123</span> <span className="text-[10px] bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded font-medium">Manager</span></div>
+              <div className="flex justify-between items-center"><span className="font-mono text-slate-600">staff@ca.com / staff123</span> <span className="text-[10px] bg-teal-50 text-teal-700 px-1.5 py-0.5 rounded font-medium">Staff</span></div>
             </div>
           </CardContent>
         </Card>
@@ -461,6 +472,9 @@ function Shell({ user, onUserUpdated, view, viewParams, setView, onLogout }) {
       }
     } catch (e) {
       console.error('Failed to load organizations:', e);
+      if (e.message && (e.message.includes('Unauthorized') || e.message.includes('401'))) {
+        onLogout();
+      }
     }
   }
 
@@ -577,22 +591,22 @@ function Shell({ user, onUserUpdated, view, viewParams, setView, onLogout }) {
 
       {/* Sidebar — fixed on mobile (slide-out), static on desktop */}
       <aside className={`
-        fixed md:static inset-y-0 left-0 z-40 w-64 bg-slate-900 text-slate-100 flex flex-col
+        fixed md:static inset-y-0 left-0 z-40 w-64 bg-white text-slate-700 flex flex-col border-r border-slate-100/80 shadow-sm md:shadow-none
         transform transition-transform duration-200 md:translate-x-0
         ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
       `}>
-        <div className="p-5 border-b border-slate-800 flex items-center justify-between">
+        <div className="p-5 border-b border-slate-100 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="w-9 h-9 rounded-lg bg-indigo-500 flex items-center justify-center">
-              <Briefcase className="w-5 h-5" />
+            <div className="w-9 h-9 rounded-lg bg-indigo-600 flex items-center justify-center shadow-sm">
+              <Briefcase className="w-5 h-5 text-white" />
             </div>
             <div>
-              <div className="font-bold">CA Manager</div>
-              <div className="text-xs text-slate-400">Practice Suite</div>
+              <div className="font-semibold text-slate-900 tracking-tight text-sm">CA Manager</div>
+              <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Practice Suite</div>
             </div>
           </div>
           <button
-            className="md:hidden text-slate-400 hover:text-white"
+            className="md:hidden text-slate-400 hover:text-slate-600"
             onClick={() => setSidebarOpen(false)}
             aria-label="Close menu"
           >
@@ -601,15 +615,15 @@ function Shell({ user, onUserUpdated, view, viewParams, setView, onLogout }) {
         </div>
 
         {/* Organization Switcher */}
-        <div className="px-4 py-3 border-b border-slate-800 bg-slate-950/40">
-          <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block mb-1.5">
+        <div className="px-4 py-3 border-b border-slate-100 bg-slate-50/50">
+          <label className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block mb-1.5">
             Active Organization
           </label>
           <div className="flex items-center gap-1.5 min-w-0">
             <select
               value={user.activeOrgId || ''}
               onChange={(e) => handleSwitchOrg(e.target.value)}
-              className="flex-1 min-w-0 bg-slate-800 text-slate-200 text-xs rounded border border-slate-700 px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer truncate"
+              className="flex-1 min-w-0 bg-white text-slate-700 text-xs rounded border border-slate-200 px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer truncate shadow-sm"
             >
               {organisations.map((o) => (
                 <option key={o.id} value={o.id}>
@@ -621,7 +635,7 @@ function Shell({ user, onUserUpdated, view, viewParams, setView, onLogout }) {
               <Button
                 variant="outline"
                 size="icon"
-                className="w-8 h-8 rounded border-slate-700 text-slate-400 hover:text-white hover:bg-slate-800 bg-transparent shrink-0 cursor-pointer p-0 flex items-center justify-center"
+                className="w-8 h-8 rounded border-slate-200 text-slate-500 hover:text-slate-800 hover:bg-slate-100 bg-white shrink-0 cursor-pointer p-0 flex items-center justify-center shadow-sm"
                 onClick={() => {
                   const active = organisations.find(o => o.id === user.activeOrgId);
                   setEditOrgName(active ? active.name : '');
@@ -635,7 +649,7 @@ function Shell({ user, onUserUpdated, view, viewParams, setView, onLogout }) {
             <Button
               variant="outline"
               size="icon"
-              className="w-8 h-8 rounded border-slate-700 text-slate-400 hover:text-white hover:bg-slate-800 bg-transparent shrink-0 cursor-pointer p-0 flex items-center justify-center"
+              className="w-8 h-8 rounded border-slate-200 text-slate-500 hover:text-slate-800 hover:bg-slate-100 bg-white shrink-0 cursor-pointer p-0 flex items-center justify-center shadow-sm"
               onClick={() => setCreateOrgOpen(true)}
               title="Create New Organization"
             >
@@ -644,41 +658,43 @@ function Shell({ user, onUserUpdated, view, viewParams, setView, onLogout }) {
           </div>
         </div>
 
-        <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
+        <nav className="flex-1 p-3 space-y-0.5 overflow-y-auto">
           {navItems.map(item => (
             <button
               key={item.key}
               onClick={() => navigate(item.key)}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition ${
-                view === item.key ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:bg-slate-800'
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-xs font-medium transition ${
+                view === item.key 
+                  ? 'bg-indigo-50 text-indigo-600 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.4)]' 
+                  : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
               }`}
             >
-              <item.icon className="w-4 h-4" />
+              <item.icon className={`w-4 h-4 ${view === item.key ? 'text-indigo-600' : 'text-slate-400'}`} />
               {item.label}
             </button>
           ))}
         </nav>
-        <div className="p-3 border-t border-slate-800">
+        <div className="p-3 border-t border-slate-100">
           {!isAppInstalled && (
             <Button
               variant="outline"
               size="sm"
-              className="w-full mb-2 bg-indigo-950/40 border-indigo-800/80 text-indigo-300 hover:bg-indigo-900/60 hover:text-indigo-100 flex items-center justify-center gap-2 cursor-pointer"
+              className="w-full mb-2 bg-indigo-50/50 border-indigo-100/50 text-indigo-600 hover:bg-indigo-50 hover:text-indigo-700 flex items-center justify-center gap-2 cursor-pointer text-xs shadow-sm"
               onClick={handleInstallApp}
               title="Install this app on your phone as a full-screen Web App"
             >
-              <DownloadCloud className="w-4 h-4 text-indigo-400 animate-pulse" /> Install Web App
+              <DownloadCloud className="w-4 h-4 text-indigo-500" /> Install Web App
             </Button>
           )}
-          <div className="px-3 py-2 mb-2">
-            <div className="text-sm font-medium">{user.name}</div>
-            <div className="text-xs text-slate-400 capitalize">{user.role}</div>
+          <div className="px-3 py-1.5 mb-2">
+            <div className="text-xs font-semibold text-slate-800">{user.name}</div>
+            <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">{user.role}</div>
           </div>
-          <Button variant="outline" size="sm" className="w-full mb-2 bg-transparent border-slate-700 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={() => { setProfileOpen(true); setSidebarOpen(false); }}>
-            <KeyRound className="w-4 h-4 mr-2" /> My Profile
+          <Button variant="outline" size="sm" className="w-full mb-2 bg-white border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-slate-900 text-xs shadow-sm" onClick={() => { setProfileOpen(true); setSidebarOpen(false); }}>
+            <KeyRound className="w-3.5 h-3.5 mr-2 text-slate-400" /> My Profile
           </Button>
-          <Button variant="outline" size="sm" className="w-full bg-transparent border-slate-700 text-slate-300 hover:bg-slate-800 hover:text-white" onClick={onLogout}>
-            <LogOut className="w-4 h-4 mr-2" /> Logout
+          <Button variant="outline" size="sm" className="w-full bg-white border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-slate-900 text-xs shadow-sm" onClick={onLogout}>
+            <LogOut className="w-3.5 h-3.5 mr-2 text-slate-400" /> Logout
           </Button>
         </div>
       </aside>
@@ -1371,12 +1387,12 @@ function Dashboard({ user, setView, onOpenProfile }) {
   if (data.role === 'staff') {
     const s = data.stats;
     const cards = [
-      { label: 'My Tasks', value: s.allMine, icon: ListChecks, color: 'bg-indigo-500', goto: () => setView('tasks', { assignedTo: user.id }) },
-      { label: 'Pending', value: s.pending, icon: Clock, color: 'bg-amber-500', goto: () => setView('tasks', { status: 'Pending', assignedTo: user.id }) },
-      { label: 'Due Today', value: s.dueToday, icon: Calendar, color: 'bg-blue-500', goto: () => setView('calendar') },
-      { label: 'Overdue', value: s.overdue, icon: AlertTriangle, color: 'bg-red-500', goto: () => setView('tasks', { status: 'overdue', assignedTo: user.id }) },
-      { label: 'In Progress', value: s.inProg, icon: TrendingUp, color: 'bg-violet-500', goto: () => setView('tasks', { status: 'In Progress', assignedTo: user.id }) },
-      { label: 'Completed', value: s.done, icon: CheckCircle2, color: 'bg-emerald-500', goto: () => setView('tasks', { status: 'Completed', assignedTo: user.id }) },
+      { label: 'My Tasks', value: s.allMine, icon: ListChecks, color: 'bg-indigo-50 text-indigo-600 border border-indigo-100/50', goto: () => setView('tasks', { assignedTo: user.id }) },
+      { label: 'Pending', value: s.pending, icon: Clock, color: 'bg-amber-50 text-amber-600 border border-amber-100/50', goto: () => setView('tasks', { status: 'Pending', assignedTo: user.id }) },
+      { label: 'Due Today', value: s.dueToday, icon: Calendar, color: 'bg-blue-50 text-blue-600 border border-blue-100/50', goto: () => setView('calendar') },
+      { label: 'Overdue', value: s.overdue, icon: AlertTriangle, color: 'bg-red-50 text-red-600 border border-red-100/50', goto: () => setView('tasks', { status: 'overdue', assignedTo: user.id }) },
+      { label: 'In Progress', value: s.inProg, icon: TrendingUp, color: 'bg-violet-50 text-violet-600 border border-violet-100/50', goto: () => setView('tasks', { status: 'In Progress', assignedTo: user.id }) },
+      { label: 'Completed', value: s.done, icon: CheckCircle2, color: 'bg-emerald-50 text-emerald-600 border border-emerald-100/50', goto: () => setView('tasks', { status: 'Completed', assignedTo: user.id }) },
     ];
     return (
       <div className="space-y-6">
@@ -1407,23 +1423,23 @@ function Dashboard({ user, setView, onOpenProfile }) {
       <PageHeader title={`Welcome, ${user.name}`} subtitle="Practice overview — click any card or row to drill down" />
       <TelegramBanner user={user} onOpenProfile={onOpenProfile} />
       <div>
-        <div className="text-sm font-semibold text-slate-600 mb-3 flex items-center gap-2"><Target className="w-4 h-4" /> LEADS</div>
+        <div className="text-xs font-semibold text-slate-500 mb-3 flex items-center gap-2 uppercase tracking-wider"><Target className="w-4 h-4" /> LEADS</div>
         <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-          <StatCard label="Total" value={l.total} icon={Target} color="bg-slate-600" goto={() => setView('leads')} />
-          <StatCard label="New" value={l.new} icon={Sparkles} color="bg-blue-500" goto={() => setView('leads', { status: 'New' })} />
-          <StatCard label="In Progress" value={l.inProgress} icon={TrendingUp} color="bg-amber-500" goto={() => setView('leads', { status: 'In Progress' })} />
-          <StatCard label="Converted" value={l.converted} icon={CheckCircle2} color="bg-emerald-500" goto={() => setView('leads', { status: 'Converted' })} />
-          <StatCard label="Cancelled" value={l.cancelled} icon={AlertTriangle} color="bg-red-500" goto={() => setView('leads', { status: 'Cancelled' })} />
+          <StatCard label="Total" value={l.total} icon={Target} color="bg-slate-50 text-slate-600 border border-slate-100" goto={() => setView('leads')} />
+          <StatCard label="New" value={l.new} icon={Sparkles} color="bg-blue-50 text-blue-600 border border-blue-100/50" goto={() => setView('leads', { status: 'New' })} />
+          <StatCard label="In Progress" value={l.inProgress} icon={TrendingUp} color="bg-amber-50 text-amber-600 border border-amber-100/50" goto={() => setView('leads', { status: 'In Progress' })} />
+          <StatCard label="Converted" value={l.converted} icon={CheckCircle2} color="bg-emerald-50 text-emerald-600 border border-emerald-100/50" goto={() => setView('leads', { status: 'Converted' })} />
+          <StatCard label="Cancelled" value={l.cancelled} icon={AlertTriangle} color="bg-red-50 text-red-600 border border-red-100/50" goto={() => setView('leads', { status: 'Cancelled' })} />
         </div>
       </div>
       <div>
-        <div className="text-sm font-semibold text-slate-600 mb-3 flex items-center gap-2"><ListChecks className="w-4 h-4" /> TASKS</div>
+        <div className="text-xs font-semibold text-slate-500 mb-3 flex items-center gap-2 uppercase tracking-wider"><ListChecks className="w-4 h-4" /> TASKS</div>
         <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-          <StatCard label="Total" value={t.total} icon={ListChecks} color="bg-slate-600" goto={() => setView('tasks')} />
-          <StatCard label="Pending" value={t.pending} icon={Clock} color="bg-amber-500" goto={() => setView('tasks', { status: 'Pending' })} />
-          <StatCard label="In Progress" value={t.inProgress} icon={TrendingUp} color="bg-violet-500" goto={() => setView('tasks', { status: 'In Progress' })} />
-          <StatCard label="Completed" value={t.completed} icon={CheckCircle2} color="bg-emerald-500" goto={() => setView('tasks', { status: 'Completed' })} />
-          <StatCard label="Overdue" value={t.overdue} icon={AlertTriangle} color="bg-red-500" goto={() => setView('tasks', { status: 'overdue' })} />
+          <StatCard label="Total" value={t.total} icon={ListChecks} color="bg-slate-50 text-slate-600 border border-slate-100" goto={() => setView('tasks')} />
+          <StatCard label="Pending" value={t.pending} icon={Clock} color="bg-amber-50 text-amber-600 border border-amber-100/50" goto={() => setView('tasks', { status: 'Pending' })} />
+          <StatCard label="In Progress" value={t.inProgress} icon={TrendingUp} color="bg-violet-50 text-violet-600 border border-violet-100/50" goto={() => setView('tasks', { status: 'In Progress' })} />
+          <StatCard label="Completed" value={t.completed} icon={CheckCircle2} color="bg-emerald-50 text-emerald-600 border border-emerald-100/50" goto={() => setView('tasks', { status: 'Completed' })} />
+          <StatCard label="Overdue" value={t.overdue} icon={AlertTriangle} color="bg-red-50 text-red-600 border border-red-100/50" goto={() => setView('tasks', { status: 'overdue' })} />
         </div>
       </div>
       <AwaitingDiscussionWidget
@@ -1605,7 +1621,7 @@ function StatCard({ label, value, icon: Icon, color, goto }) {
       <CardContent className="p-4">
         <div className="flex items-center justify-between mb-2">
           <span className="text-sm text-slate-500">{label}</span>
-          <div className={`w-8 h-8 rounded-lg ${color} flex items-center justify-center text-white`}>
+          <div className={`w-8 h-8 rounded-lg ${color} flex items-center justify-center`}>
             <Icon className="w-4 h-4" />
           </div>
         </div>
@@ -2192,6 +2208,7 @@ function Tasks({ user, viewParams = {}, setView }) {
   const [tasks, setTasks] = useState([]);
   const [users, setUsers] = useState([]);
   const [q, setQ] = useState('');
+  const [debouncedQ, setDebouncedQ] = useState('');
   const [statusFilter, setStatusFilter] = useState(viewParams.status || 'all');
   const [priorityFilter, setPriorityFilter] = useState(viewParams.priority || 'all');
   const [categoryFilter, setCategoryFilter] = useState(viewParams.category || 'all');
@@ -2206,6 +2223,13 @@ function Tasks({ user, viewParams = {}, setView }) {
 
   const [sortField, setSortField] = useState('createdAt');
   const [sortOrder, setSortOrder] = useState('desc');
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedQ(q);
+    }, 300);
+    return () => clearTimeout(handler);
+  }, [q]);
 
   function handleSort(field) {
     if (sortField === field) {
@@ -2233,6 +2257,7 @@ function Tasks({ user, viewParams = {}, setView }) {
       if (categoryFilter !== 'all') url += `&category=${categoryFilter}`;
       if (assignedFilter !== 'all') url += `&assignedTo=${assignedFilter}`;
       if (discussionFilter !== 'all') url += `&discussion=${discussionFilter}`;
+      if (debouncedQ && debouncedQ.trim()) url += `&q=${encodeURIComponent(debouncedQ.trim())}`;
 
       const [t, u] = await Promise.all([call(url), call('users')]);
       setTasks(t.tasks || []);
@@ -2258,12 +2283,12 @@ function Tasks({ user, viewParams = {}, setView }) {
   // Reset page when filters change
   useEffect(() => {
     setPage(1);
-  }, [statusFilter, priorityFilter, categoryFilter, assignedFilter, discussionFilter]);
+  }, [statusFilter, priorityFilter, categoryFilter, assignedFilter, discussionFilter, debouncedQ]);
 
   // Load data when page, filters, or openId changes
   useEffect(() => {
     load(page);
-  }, [page, statusFilter, priorityFilter, categoryFilter, assignedFilter, discussionFilter, viewParams.openId]);
+  }, [page, statusFilter, priorityFilter, categoryFilter, assignedFilter, discussionFilter, debouncedQ, viewParams.openId]);
   useEffect(() => {
     if (viewParams.status) setStatusFilter(viewParams.status);
     if (viewParams.priority) setPriorityFilter(viewParams.priority);
@@ -2294,7 +2319,7 @@ function Tasks({ user, viewParams = {}, setView }) {
       } else if (discussionFilter === 'any') {
         if (!t.needsDiscussion) return false;
       }
-      if (q && !`${t.title} ${t.description} ${t.clientName || ''}`.toLowerCase().includes(q.toLowerCase())) return false;
+      if (debouncedQ && !`${t.title} ${t.description} ${t.clientName || ''}`.toLowerCase().includes(debouncedQ.toLowerCase())) return false;
       return true;
     });
 
@@ -2334,7 +2359,7 @@ function Tasks({ user, viewParams = {}, setView }) {
       if (valA > valB) return sortOrder === 'asc' ? 1 : -1;
       return 0;
     });
-  }, [tasks, q, statusFilter, priorityFilter, categoryFilter, assignedFilter, discussionFilter, sortField, sortOrder, users]);
+  }, [tasks, debouncedQ, statusFilter, priorityFilter, categoryFilter, assignedFilter, discussionFilter, sortField, sortOrder, users]);
 
   async function deleteTask(id) {
     if (!confirm('Delete task?')) return;
