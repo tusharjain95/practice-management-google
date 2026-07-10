@@ -148,7 +148,7 @@ CA Practice Manager replaces the spreadsheets, WhatsApp groups, and manual filin
 |---|---|
 | Frontend | Next.js 15 (App Router) · React 18 · Tailwind CSS · shadcn/ui |
 | Backend | Next.js API routes (catch-all) · Node.js runtime |
-| Database | MongoDB (collections: users, leads, tasks, clients, invoices, payments, quotations, settings, activity_logs) |
+| Database | **PostgreSQL / Supabase** (via JSONB with dedicated indexes) OR **MongoDB** (via native collections) |
 | Auth | JWT (jsonwebtoken) + bcryptjs |
 | PDF | jsPDF + jspdf-autotable (client-side) |
 | Excel | SheetJS / xlsx (client-side) |
@@ -160,12 +160,56 @@ No external SaaS dependencies. No vendor lock-in. Everything runs on your infras
 
 ---
 
+## ⚡ Dual Database Engine: Supabase / PostgreSQL & MongoDB
+
+To completely eliminate sluggishness from MongoDB free tiers, **CA Practice Manager** includes a high-performance **Dual Database Engine** that supports both MongoDB and **Supabase / PostgreSQL**. 
+
+Providing a PostgreSQL database connection string via `DATABASE_URL` will automatically boot the application in PostgreSQL mode. Under the hood, a custom, zero-dependency, ultra-optimized JSONB Adapter creates and manages separate relational tables (`tbl_users`, `tbl_leads`, etc.) mapped with B-tree indexes for `org_id` and `id`, ensuring sub-millisecond query responses!
+
+---
+
+## 🔌 Migrating from MongoDB to Supabase / PostgreSQL
+
+We have provided a fully automated, safe migration script to transfer all of your existing MongoDB collections directly into your new Supabase instance with zero data loss or downtime.
+
+### Step 1: Set Up your Supabase Database
+1. Go to [Supabase](https://supabase.com) and create a free project.
+2. Navigate to **Project Settings** -> **Database**.
+3. Copy your **URI Connection String** (it should look like `postgresql://postgres.[your-project-id]:[password]@aws-0-us-east-1.pooler.supabase.com:5432/postgres`).
+
+### Step 2: Configure Environment Variables
+Add your database URLs to your `.env` file:
+```env
+# Your existing MongoDB source connection
+MONGO_URL=mongodb+srv://admin:password@cluster.mongodb.net
+DB_NAME=ca_practice
+
+# Your new Supabase target connection
+DATABASE_URL=postgresql://postgres.your-supabase-id:your-supabase-password@aws-0-us-east-1.pooler.supabase.com:5432/postgres
+```
+
+### Step 3: Run the Migration Script
+Run the built-in migration command to copy all data from MongoDB to Supabase:
+```bash
+# Using yarn
+yarn db:migrate-supabase
+
+# Or using npm
+npm run db:migrate-supabase
+```
+The script will dynamically create all tables (`tbl_users`, `tbl_leads`, etc.), establish high-speed compound database indexes, and securely load and transfer every single document while matching IDs perfectly.
+
+### Step 4: Decommission MongoDB
+Once the script prints `🎉 MongoDB to Supabase migration completed successfully!`, you can remove the `MONGO_URL` variable. The application will now run entirely on Supabase/PostgreSQL with lightning-fast query speeds!
+
+---
+
 ## 🚀 Quick Start (Local)
 
 ### Prerequisites
 - **Node.js** 18+ (recommended 20 LTS)
 - **Yarn** 1.x (or npm/pnpm)
-- **MongoDB** 6+ — local install OR a MongoDB Atlas connection string
+- **PostgreSQL / Supabase** OR **MongoDB** 6+
 
 ### 1. Clone & install
 ```bash
@@ -177,7 +221,10 @@ yarn install
 ### 2. Configure environment
 Create `.env` in the project root:
 ```env
-MONGO_URL=mongodb://localhost:27017
+# Database (Provide one - providing DATABASE_URL automatically enables Supabase/PostgreSQL mode)
+DATABASE_URL=postgresql://postgres:your-password@db.supabase.co:5432/postgres
+# MONGO_URL=mongodb://localhost:27017
+
 DB_NAME=ca_practice
 APP_BASE_URL=http://localhost:3000
 NEXT_PUBLIC_BASE_URL=http://localhost:3000

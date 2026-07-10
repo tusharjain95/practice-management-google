@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { MongoClient } from 'mongodb';
+import { getPostgresDb } from '@/lib/db/postgres';
 import { v4 as uuidv4 } from 'uuid';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
@@ -390,6 +391,20 @@ async function ensureIndexes(db) {
 
 async function getDb() {
   if (cached.db) return cached.db;
+  
+  const pgUrl = process.env.DATABASE_URL || process.env.SUPABASE_DATABASE_URL || process.env.POSTGRES_URL;
+  if (pgUrl) {
+    console.log('[AI Studio] Connecting to Supabase/PostgreSQL database...');
+    try {
+      cached.db = await getPostgresDb(pgUrl);
+      await seedAdmin(cached.db);
+      console.log('[AI Studio] Connected to Supabase/PostgreSQL successfully!');
+      return cached.db;
+    } catch (err) {
+      console.error('[AI Studio] Failed to connect to Supabase/PostgreSQL database:', err);
+    }
+  }
+
   if (!MONGO_URL) {
     console.warn('[AI Studio] MONGO_URL not provided, using JSON-fallback mock db.');
     cached.db = getMockDb();
