@@ -544,6 +544,24 @@ async function handle(request, ctx) {
         const initialOrgs = [{ orgId: defaultOrgId, role: 'admin' }];
         await db.collection('users').updateOne({ id: me.id }, { $set: { orgs: initialOrgs } });
         me.orgs = initialOrgs;
+      } else {
+        // Self-healing check for GUI-restored backups: make sure listed orgs actually exist
+        for (const orgMembership of me.orgs) {
+          const orgId = orgMembership.orgId;
+          if (orgId) {
+            const orgExists = await db.collection('organisations').findOne({ id: orgId });
+            if (!orgExists) {
+              console.log(`[AI Studio] Org ${orgId} from user profile not found. Auto-creating fallback record...`);
+              const fallbackOrg = {
+                id: orgId,
+                name: me.name ? `${me.name}'s Org` : "Default Org",
+                createdBy: me.id,
+                createdAt: new Date().toISOString()
+              };
+              await db.collection('organisations').insertOne(fallbackOrg);
+            }
+          }
+        }
       }
 
       // Always ensure all existing unassociated records are associated to the user's default organization
