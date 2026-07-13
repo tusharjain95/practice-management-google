@@ -2017,7 +2017,7 @@ function Leads({ user, viewParams = {}, setView }) {
 
       {open && (<LeadForm users={users} initial={editing} currentUser={user} onClose={() => setOpen(false)} onSaved={() => { setOpen(false); load(); }} />)}
       {convertOpen && (<ConvertLeadDialog lead={convertOpen} users={users} onClose={() => setConvertOpen(null)} onDone={() => { setConvertOpen(null); load(); }} />)}
-      {detail && (<LeadDetail lead={detail} users={users} onClose={() => { setDetail(null); setView('leads', {}); }} onChanged={async () => { const d = await call('leads'); const f = d.leads.find(x => x.id === detail.id); if (f) setDetail(f); load(); }} canEdit={canEditLead(detail)} />)}
+      {detail && (<LeadDetail lead={detail} users={users} onClose={() => { setDetail(null); setView('leads', {}); }} onChanged={async () => { const d = await call(`leads?id=${detail.id}`); const f = d.leads?.[0] || d.data?.[0]; if (f) setDetail(f); load(); }} canEdit={canEditLead(detail)} />)}
     </div>
   );
 }
@@ -2566,7 +2566,7 @@ function Tasks({ user, viewParams = {}, setView }) {
         </CardContent>
       </Card>
       {open && (<TaskForm users={users} initial={editing} currentUser={user} onClose={() => setOpen(false)} onSaved={() => { setOpen(false); load(); }} />)}
-      {detail && (<TaskDetail task={detail} users={users} currentUser={user} onClose={() => { setDetail(null); setView('tasks', {}); }} onChanged={async () => { const d = await call('tasks'); const f = d.tasks.find(x => x.id === detail.id); if (f) setDetail(f); load(); }} />)}
+      {detail && (<TaskDetail task={detail} users={users} currentUser={user} onClose={() => { setDetail(null); setView('tasks', {}); }} onChanged={async () => { const d = await call(`tasks?id=${detail.id}`); const f = d.tasks?.[0] || d.data?.[0]; if (f) setDetail(f); load(); }} />)}
     </div>
   );
 }
