@@ -14,7 +14,9 @@ import {
   generateRosterPdfBuffer,
   sendWhatsAppTemplateMessage,
   logNotification,
-  sendTestWhatsApp
+  sendTestWhatsApp,
+  sendTaskCommentWhatsApp,
+  sendLeadNoteWhatsApp
 } from '@/lib/whatsapp/client';
 import {
   sendTaskAssignedTelegram,
@@ -24,7 +26,9 @@ import {
   sendLeadReassignedTelegram,
   getBotUsername,
   sendTestTelegram,
-  sendDailyRosterTelegram
+  sendDailyRosterTelegram,
+  sendTaskCommentTelegram,
+  sendLeadNoteTelegram
 } from '@/lib/telegram/client';
 
 export const runtime = 'nodejs';
@@ -1073,6 +1077,45 @@ async function handle(request, ctx) {
         const dueTodayTasks = pendingTasks.filter(t => t.dueDate === date);
         const otherPendingTasks = pendingTasks.filter(t => !t.dueDate || t.dueDate > date);
 
+        // Fetch all organization pending tasks (not just for the individual staff)
+        const allOrgPendingTasks = await db.collection('tasks').find({
+          orgId: { $in: orgIds },
+          status: { $ne: 'Completed' }
+        }).sort({ dueDate: 1 }).toArray();
+
+        // Fetch organization names
+        const orgs = await db.collection('organisations').find({
+          id: { $in: orgIds }
+        }).toArray();
+        const orgNameMap = {};
+        orgs.forEach(o => {
+          orgNameMap[o.id] = o.name;
+        });
+
+        // Fetch all users in these organizations to map IDs to names
+        const usersList = await db.collection('users').find({
+          "orgs.orgId": { $in: orgIds }
+        }).toArray();
+        const userNameMap = {};
+        usersList.forEach(u => {
+          userNameMap[u.id] = u.name;
+        });
+
+        // Map tasks for organization view with assignee names and org names
+        const mappedOrgTasks = allOrgPendingTasks.map(t => {
+          let assignedName = 'Unassigned';
+          if (t.assignees && t.assignees.length > 0) {
+            assignedName = t.assignees.map(id => userNameMap[id] || id).join(', ');
+          } else if (t.assignedTo) {
+            assignedName = userNameMap[t.assignedTo] || t.assignedTo;
+          }
+          return {
+            ...t,
+            orgName: orgNameMap[t.orgId] || 'Unknown Organisation',
+            assignedToName: assignedName
+          };
+        });
+
         const pdfData = {
           completedYesterdayCount: completedYesterdayTasks.length,
           openedYesterdayCount: openedYesterdayTasks.length,
@@ -1082,7 +1125,9 @@ async function handle(request, ctx) {
           dueTodayCount: dueTodayTasks.length,
           overdueTasks,
           dueTodayTasks,
-          pendingTasks: otherPendingTasks
+          pendingTasks: otherPendingTasks,
+          orgWiseTasks: mappedOrgTasks,
+          orgNameMap
         };
 
         const pdfBuffer = await generateRosterPdfBuffer(user.name, date, pdfData);
@@ -1484,6 +1529,32 @@ async function handle(request, ctx) {
         const { note } = await request.json();
         const entry = { id: uuidv4(), text: note, by: me.name, at: new Date().toISOString() };
         await db.collection('leads').updateOne({ id, orgId: me.activeOrgId }, { $push: { notes: entry }, $set: { updatedAt: new Date().toISOString() } });
+
+        // Trigger notifications for lead notes
+        try {
+          const notifyUserIds = new Set();
+          if (existingLead.assignedTo) notifyUserIds.add(existingLead.assignedTo);
+          if (existingLead.createdBy) notifyUserIds.add(existingLead.createdBy);
+          notifyUserIds.delete(me.id);
+
+          if (notifyUserIds.size > 0) {
+            db.collection('users').find({ id: { $in: Array.from(notifyUserIds) } }).toArray().then(usersToNotify => {
+              usersToNotify.forEach(userToNotify => {
+                sendLeadNoteTelegram(db, userToNotify, existingLead, entry, me.name).catch(err => {
+                  console.error('[Notification Trigger Error] sendLeadNoteTelegram:', err);
+                });
+                sendLeadNoteWhatsApp(db, userToNotify, existingLead, entry, me.name).catch(err => {
+                  console.error('[Notification Trigger Error] sendLeadNoteWhatsApp:', err);
+                });
+              });
+            }).catch(err => {
+              console.error('[Notification Trigger Error] fetching users to notify on lead note:', err);
+            });
+          }
+        } catch (notificationErr) {
+          console.error('[Notification Trigger Error] Lead Note:', notificationErr);
+        }
+
         return json({ ok: true, note: entry });
       }
       const body = await request.json();
@@ -1729,6 +1800,41 @@ async function handle(request, ctx) {
         const { comment } = await request.json();
         const entry = { id: uuidv4(), text: comment, by: me.name, at: new Date().toISOString() };
         await db.collection('tasks').updateOne({ id, orgId: me.activeOrgId }, { $push: { comments: entry }, $set: { updatedAt: new Date().toISOString() } });
+
+        // Trigger notifications for task comments
+        try {
+          const existingTask = await db.collection('tasks').findOne({ id, orgId: me.activeOrgId });
+          if (existingTask) {
+            const notifyUserIds = new Set();
+            if (existingTask.assignedTo) notifyUserIds.add(existingTask.assignedTo);
+            if (Array.isArray(existingTask.assignees)) {
+              existingTask.assignees.forEach(aid => {
+                if (aid) notifyUserIds.add(aid);
+              });
+            }
+            if (existingTask.createdBy) notifyUserIds.add(existingTask.createdBy);
+            if (existingTask.discussionWith) notifyUserIds.add(existingTask.discussionWith);
+            notifyUserIds.delete(me.id);
+
+            if (notifyUserIds.size > 0) {
+              db.collection('users').find({ id: { $in: Array.from(notifyUserIds) } }).toArray().then(usersToNotify => {
+                usersToNotify.forEach(userToNotify => {
+                  sendTaskCommentTelegram(db, userToNotify, existingTask, entry, me.name).catch(err => {
+                    console.error('[Notification Trigger Error] sendTaskCommentTelegram:', err);
+                  });
+                  sendTaskCommentWhatsApp(db, userToNotify, existingTask, entry, me.name).catch(err => {
+                    console.error('[Notification Trigger Error] sendTaskCommentWhatsApp:', err);
+                  });
+                });
+              }).catch(err => {
+                console.error('[Notification Trigger Error] fetching users to notify on task comment:', err);
+              });
+            }
+          }
+        } catch (notificationErr) {
+          console.error('[Notification Trigger Error] Task Comment:', notificationErr);
+        }
+
         return json({ ok: true, comment: entry });
       }
       const body = await request.json();

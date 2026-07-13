@@ -10,6 +10,7 @@ import {
   IndianRupee, Building2, ChevronLeft, RotateCcw, Upload, KeyRound,
   BarChart3, ClipboardCheck, ShieldCheck, Database, DownloadCloud, UploadCloud,
   MessageSquare, Menu, X, ArrowUpDown, ArrowUp, ArrowDown, Send, Loader2,
+  Sun, Moon,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -238,6 +239,25 @@ function App() {
   const [view, setViewName] = useState('dashboard');
   const [viewParams, setViewParams] = useState({});
 
+  const [theme, setTheme] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('ca_theme') || 'light';
+    }
+    return 'light';
+  });
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const root = window.document.documentElement;
+      if (theme === 'dark') {
+        root.classList.add('dark');
+      } else {
+        root.classList.remove('dark');
+      }
+      localStorage.setItem('ca_theme', theme);
+    }
+  }, [theme]);
+
   function setView(name, params = {}) {
     setViewName(name);
     setViewParams(params);
@@ -315,7 +335,7 @@ function App() {
     return <div className="min-h-screen flex items-center justify-center bg-slate-50">Loading...</div>;
   }
   if (!user) return <Login onLogin={handleLogin} />;
-  return <Shell user={user} onUserUpdated={setUser} view={view} viewParams={viewParams} setView={setView} onLogout={logout} />;
+  return <Shell user={user} onUserUpdated={setUser} view={view} viewParams={viewParams} setView={setView} onLogout={logout} theme={theme} setTheme={setTheme} />;
 }
 
 function Login({ onLogin }) {
@@ -409,7 +429,7 @@ function Login({ onLogin }) {
   );
 }
 
-function Shell({ user, onUserUpdated, view, viewParams, setView, onLogout }) {
+function Shell({ user, onUserUpdated, view, viewParams, setView, onLogout, theme, setTheme }) {
   const [profileOpen, setProfileOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   
@@ -700,7 +720,7 @@ function Shell({ user, onUserUpdated, view, viewParams, setView, onLogout }) {
       </aside>
 
       <main className="flex-1 overflow-auto min-w-0">
-        <TopBar user={user} setView={setView} onMenuClick={() => setSidebarOpen(true)} activeOrgName={activeOrgName} onOpenProfile={() => setProfileOpen(true)} />
+        <TopBar user={user} setView={setView} onMenuClick={() => setSidebarOpen(true)} activeOrgName={activeOrgName} onOpenProfile={() => setProfileOpen(true)} theme={theme} setTheme={setTheme} />
         <div className="p-3 sm:p-4 md:p-6 max-w-[1400px] mx-auto">
           {view === 'dashboard' && <Dashboard user={user} setView={setView} onOpenProfile={() => setProfileOpen(true)} />}
           {view === 'calendar' && <CalendarView user={user} setView={setView} />}
@@ -1183,7 +1203,7 @@ function MyProfileDialog({ user, onUserUpdated, onClose }) {
   );
 }
 
-function TopBar({ user, setView, onMenuClick, activeOrgName, onOpenProfile }) {
+function TopBar({ user, setView, onMenuClick, activeOrgName, onOpenProfile, theme, setTheme }) {
   const { call } = useApi();
   const [q, setQ] = useState('');
   const [results, setResults] = useState(null);
@@ -1250,6 +1270,16 @@ function TopBar({ user, setView, onMenuClick, activeOrgName, onOpenProfile }) {
               {activeOrgName}
             </Badge>
           )}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded-full h-9 w-9 p-0 flex items-center justify-center cursor-pointer shrink-0"
+            onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+            title={`Switch to ${theme === 'dark' ? 'Light' : 'Dark'} Mode`}
+            id="theme-toggle-btn"
+          >
+            {theme === 'dark' ? <Sun className="w-5 h-5 text-amber-500" /> : <Moon className="w-5 h-5 text-indigo-600" />}
+          </Button>
           <Button
             variant="ghost"
             size="icon"
