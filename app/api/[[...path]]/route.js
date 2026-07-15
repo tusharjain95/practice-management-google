@@ -2608,14 +2608,36 @@ async function handle(request, ctx) {
     // -------- SEARCH (global) --------
     if (route === 'search' && method === 'GET') {
       const q = (url.searchParams.get('q') || '').trim();
-      if (q.length < 3) {
+      if (q.length < 1) {
         return json({ leads: [], tasks: [], clients: [], invoices: [], quotations: [] });
       }
       const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-      const filterStaff = me.role === 'staff' ? { assignedTo: me.id } : {};
+      
+      const leadFilter = { orgId: me.activeOrgId };
+      if (me.role === 'staff') {
+        leadFilter.assignedTo = me.id;
+      }
+      leadFilter.$or = [{ name: rx }, { phone: rx }, { email: rx }, { company: rx }];
+
+      let taskQuery = { orgId: me.activeOrgId };
+      if (me.role === 'staff') {
+        taskQuery.$and = [
+          { $or: [{ title: rx }, { description: rx }, { clientName: rx }] },
+          {
+            $or: [
+              { assignedTo: me.id },
+              { assignees: me.id },
+              { needsDiscussion: true, discussionWith: me.id }
+            ]
+          }
+        ];
+      } else {
+        taskQuery.$or = [{ title: rx }, { description: rx }, { clientName: rx }];
+      }
+
       const [leads, tasks, clients, invoices, quotations] = await Promise.all([
-        db.collection('leads').find({ orgId: me.activeOrgId, ...filterStaff, $or: [{ name: rx }, { phone: rx }, { email: rx }, { company: rx }] }).project({ _id: 0 }).limit(5).toArray(),
-        db.collection('tasks').find({ orgId: me.activeOrgId, ...filterStaff, $or: [{ title: rx }, { description: rx }, { clientName: rx }] }).project({ _id: 0 }).limit(5).toArray(),
+        db.collection('leads').find(leadFilter).project({ _id: 0 }).limit(5).toArray(),
+        db.collection('tasks').find(taskQuery).project({ _id: 0 }).limit(5).toArray(),
         me.role !== 'staff' ? db.collection('clients').find({ orgId: me.activeOrgId, $or: [{ name: rx }, { company: rx }, { phone: rx }, { email: rx }, { gstin: rx }] }).project({ _id: 0 }).limit(5).toArray() : [],
         me.role !== 'staff' ? db.collection('invoices').find({ orgId: me.activeOrgId, $or: [{ invoiceNumber: rx }, { clientName: rx }, { companyName: rx }] }).project({ _id: 0 }).limit(5).toArray() : [],
         me.role !== 'staff' ? db.collection('quotations').find({ orgId: me.activeOrgId, $or: [{ quotationNumber: rx }, { clientName: rx }, { companyName: rx }] }).project({ _id: 0 }).limit(5).toArray() : [],
