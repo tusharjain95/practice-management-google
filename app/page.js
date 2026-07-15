@@ -1233,27 +1233,27 @@ function TopBar({ user, setView, onMenuClick, activeOrgName, onOpenProfile, them
   const total = results ? (results.leads.length + results.tasks.length + results.clients.length + results.invoices.length + results.quotations.length) : 0;
 
   return (
-    <div className="bg-white border-b sticky top-0 z-30">
+    <div className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 sticky top-0 z-30">
       <div className="max-w-[1400px] mx-auto px-3 sm:px-4 md:px-6 py-2 sm:py-3 flex items-center justify-between gap-1.5 sm:gap-4">
         <button
-          className="md:hidden p-2 -ml-1 text-slate-700 hover:bg-slate-100 rounded-md shrink-0"
+          className="md:hidden p-2 -ml-1 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md shrink-0"
           onClick={onMenuClick}
           aria-label="Open menu"
         >
           <Menu className="w-5 h-5" />
         </button>
-        <div className="static md:relative flex-1 max-w-xl min-w-[120px]">
+        <div className="relative flex-1 max-w-xl min-w-[120px]">
           <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
           <Input
             placeholder="Search..."
-            className="pl-9 text-sm w-full bg-slate-50 border-slate-200"
+            className="pl-9 text-sm w-full bg-slate-50 border-slate-200 dark:bg-slate-950 dark:border-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500"
             value={q}
             onChange={e => setQ(e.target.value)}
             onFocus={() => results && setOpen(true)}
             onBlur={() => setTimeout(() => setOpen(false), 200)}
           />
           {open && results && (
-            <div className="absolute top-14 left-3 right-3 md:top-12 md:left-0 md:right-0 bg-white dark:bg-slate-900 border dark:border-slate-800 rounded-lg shadow-xl max-h-96 overflow-y-auto z-50">
+            <div className="absolute top-full mt-1.5 left-0 right-0 bg-white dark:bg-slate-900 border dark:border-slate-800 rounded-lg shadow-xl max-h-96 overflow-y-auto z-50">
               {total === 0 && <div className="p-4 text-sm text-slate-500">No results.</div>}
               {results.leads.length > 0 && <SearchGroup title="Leads" items={results.leads.map(l => ({ id: l.id, title: l.name, sub: `${l.serviceType} • ${l.phone}`, badge: l.status }))} onClick={(id) => goto('lead', id)} />}
               {results.tasks.length > 0 && <SearchGroup title="Tasks" items={results.tasks.map(t => ({ id: t.id, title: t.title, sub: `${t.category} • ${t.priority}`, badge: t.status }))} onClick={(id) => goto('task', id)} />}
@@ -1265,25 +1265,25 @@ function TopBar({ user, setView, onMenuClick, activeOrgName, onOpenProfile, them
         </div>
         <div className="flex items-center gap-1.5 sm:gap-3 shrink-0">
           {activeOrgName && (
-            <Badge variant="outline" className="hidden lg:flex items-center gap-1.5 px-3 py-1 bg-slate-50 border-slate-200 text-slate-700 font-medium text-xs rounded-full">
-              <Building2 className="w-3.5 h-3.5 text-indigo-500" />
+            <Badge variant="outline" className="hidden lg:flex items-center gap-1.5 px-3 py-1 bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 font-medium text-xs rounded-full">
+              <Building2 className="w-3.5 h-3.5 text-indigo-500 dark:text-indigo-400" />
               {activeOrgName}
             </Badge>
           )}
           <Button
             variant="ghost"
             size="icon"
-            className="text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded-full h-9 w-9 p-0 flex items-center justify-center cursor-pointer shrink-0"
+            className="text-slate-600 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full h-9 w-9 p-0 flex items-center justify-center cursor-pointer shrink-0"
             onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
             title={`Switch to ${theme === 'dark' ? 'Light' : 'Dark'} Mode`}
             id="theme-toggle-btn"
           >
-            {theme === 'dark' ? <Sun className="w-5 h-5 text-amber-500" /> : <Moon className="w-5 h-5 text-indigo-600" />}
+            {theme === 'dark' ? <Sun className="w-5 h-5 text-amber-500" /> : <Moon className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />}
           </Button>
           <Button
             variant="ghost"
             size="icon"
-            className="text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50 rounded-full h-9 w-9 p-0 flex items-center justify-center cursor-pointer shrink-0"
+            className="text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 rounded-full h-9 w-9 p-0 flex items-center justify-center cursor-pointer shrink-0"
             onClick={onOpenProfile}
             title="Connect / Configure Telegram & WhatsApp Notifications"
           >
@@ -1361,12 +1361,12 @@ function ReminderSection({ title, items, setView, kind }) {
   if (!items?.length) return null;
   const isLead = kind === 'lead';
   return (
-    <div className="border-b">
-      <div className="px-3 py-1.5 text-xs font-semibold text-slate-600 bg-slate-50">{title} ({items.length})</div>
+    <div className="border-b dark:border-slate-800">
+      <div className="px-3 py-1.5 text-xs font-semibold text-slate-600 dark:text-slate-400 bg-slate-50 dark:bg-slate-950/50">{title} ({items.length})</div>
       {items.slice(0, 5).map(it => (
-        <button key={it.id} onClick={() => setView(it.id)} className="w-full text-left px-3 py-2 hover:bg-slate-50">
-          <div className="text-sm font-medium text-indigo-600 hover:underline">{isLead ? it.name : it.title}</div>
-          <div className="text-xs text-slate-500">
+        <button key={it.id} onClick={() => setView(it.id)} className="w-full text-left px-3 py-2 hover:bg-slate-50 dark:hover:bg-slate-800/50">
+          <div className="text-sm font-medium text-indigo-600 dark:text-indigo-400 hover:underline">{isLead ? it.name : it.title}</div>
+          <div className="text-xs text-slate-500 dark:text-slate-400">
             {isLead ? `${it.serviceType} • Follow-up: ${it.followUpDate}` : `${it.category} • Due: ${it.dueDate}`}
           </div>
         </button>
@@ -1378,16 +1378,16 @@ function ReminderSection({ title, items, setView, kind }) {
 function TelegramBanner({ user, onOpenProfile }) {
   if (user?.telegramChatId) return null;
   return (
-    <div className="bg-gradient-to-r from-indigo-50 to-indigo-100/50 border border-indigo-200/80 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-sm">
+    <div className="bg-gradient-to-r from-indigo-50 to-indigo-100/50 dark:from-slate-900 dark:to-slate-950/50 border border-indigo-200/80 dark:border-slate-800 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-sm">
       <div className="flex items-start gap-3">
         <div className="p-2 bg-indigo-600 text-white rounded-lg shrink-0 shadow-sm">
           <Send className="w-5 h-5 animate-pulse" />
         </div>
         <div>
-          <h4 className="text-sm font-semibold text-indigo-950 flex items-center gap-1.5">
+          <h4 className="text-sm font-semibold text-indigo-950 dark:text-indigo-200 flex items-center gap-1.5">
             Connect Telegram Notification System 🤖
           </h4>
-          <p className="text-xs text-indigo-850 mt-0.5 leading-relaxed max-w-2xl">
+          <p className="text-xs text-indigo-850 dark:text-slate-400 mt-0.5 leading-relaxed max-w-2xl">
             Never miss an update. Receive instant alerts for task assignments, lead allocation, and your daily performance PDF roster directly on Telegram.
           </p>
         </div>
@@ -1453,23 +1453,23 @@ function Dashboard({ user, setView, onOpenProfile }) {
       <PageHeader title={`Welcome, ${user.name}`} subtitle="Practice overview — click any card or row to drill down" />
       <TelegramBanner user={user} onOpenProfile={onOpenProfile} />
       <div>
-        <div className="text-xs font-semibold text-slate-500 mb-3 flex items-center gap-2 uppercase tracking-wider"><Target className="w-4 h-4" /> LEADS</div>
+        <div className="text-xs font-semibold text-slate-500 dark:text-slate-400 mb-3 flex items-center gap-2 uppercase tracking-wider"><Target className="w-4 h-4" /> LEADS</div>
         <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-          <StatCard label="Total" value={l.total} icon={Target} color="bg-slate-50 text-slate-600 border border-slate-100" goto={() => setView('leads')} />
-          <StatCard label="New" value={l.new} icon={Sparkles} color="bg-blue-50 text-blue-600 border border-blue-100/50" goto={() => setView('leads', { status: 'New' })} />
-          <StatCard label="In Progress" value={l.inProgress} icon={TrendingUp} color="bg-amber-50 text-amber-600 border border-amber-100/50" goto={() => setView('leads', { status: 'In Progress' })} />
-          <StatCard label="Converted" value={l.converted} icon={CheckCircle2} color="bg-emerald-50 text-emerald-600 border border-emerald-100/50" goto={() => setView('leads', { status: 'Converted' })} />
-          <StatCard label="Cancelled" value={l.cancelled} icon={AlertTriangle} color="bg-red-50 text-red-600 border border-red-100/50" goto={() => setView('leads', { status: 'Cancelled' })} />
+          <StatCard label="Total" value={l.total} icon={Target} color="bg-slate-50 text-slate-600 border border-slate-100 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700" goto={() => setView('leads')} />
+          <StatCard label="New" value={l.new} icon={Sparkles} color="bg-blue-50 text-blue-600 border border-blue-100/50 dark:bg-blue-950/40 dark:text-blue-400 dark:border-blue-900/30" goto={() => setView('leads', { status: 'New' })} />
+          <StatCard label="In Progress" value={l.inProgress} icon={TrendingUp} color="bg-amber-50 text-amber-600 border border-amber-100/50 dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-900/30" goto={() => setView('leads', { status: 'In Progress' })} />
+          <StatCard label="Converted" value={l.converted} icon={CheckCircle2} color="bg-emerald-50 text-emerald-600 border border-emerald-100/50 dark:bg-emerald-950/40 dark:text-emerald-400 dark:border-emerald-900/30" goto={() => setView('leads', { status: 'Converted' })} />
+          <StatCard label="Cancelled" value={l.cancelled} icon={AlertTriangle} color="bg-red-50 text-red-600 border border-red-100/50 dark:bg-red-950/40 dark:text-red-400 dark:border-red-900/30" goto={() => setView('leads', { status: 'Cancelled' })} />
         </div>
       </div>
       <div>
-        <div className="text-xs font-semibold text-slate-500 mb-3 flex items-center gap-2 uppercase tracking-wider"><ListChecks className="w-4 h-4" /> TASKS</div>
+        <div className="text-xs font-semibold text-slate-500 dark:text-slate-400 mb-3 flex items-center gap-2 uppercase tracking-wider"><ListChecks className="w-4 h-4" /> TASKS</div>
         <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-          <StatCard label="Total" value={t.total} icon={ListChecks} color="bg-slate-50 text-slate-600 border border-slate-100" goto={() => setView('tasks')} />
-          <StatCard label="Pending" value={t.pending} icon={Clock} color="bg-amber-50 text-amber-600 border border-amber-100/50" goto={() => setView('tasks', { status: 'Pending' })} />
-          <StatCard label="In Progress" value={t.inProgress} icon={TrendingUp} color="bg-violet-50 text-violet-600 border border-violet-100/50" goto={() => setView('tasks', { status: 'In Progress' })} />
-          <StatCard label="Completed" value={t.completed} icon={CheckCircle2} color="bg-emerald-50 text-emerald-600 border border-emerald-100/50" goto={() => setView('tasks', { status: 'Completed' })} />
-          <StatCard label="Overdue" value={t.overdue} icon={AlertTriangle} color="bg-red-50 text-red-600 border border-red-100/50" goto={() => setView('tasks', { status: 'overdue' })} />
+          <StatCard label="Total" value={t.total} icon={ListChecks} color="bg-slate-50 text-slate-600 border border-slate-100 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700" goto={() => setView('tasks')} />
+          <StatCard label="Pending" value={t.pending} icon={Clock} color="bg-amber-50 text-amber-600 border border-amber-100/50 dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-900/30" goto={() => setView('tasks', { status: 'Pending' })} />
+          <StatCard label="In Progress" value={t.inProgress} icon={TrendingUp} color="bg-violet-50 text-violet-600 border border-violet-100/50 dark:bg-violet-950/40 dark:text-violet-400 dark:border-violet-900/30" goto={() => setView('tasks', { status: 'In Progress' })} />
+          <StatCard label="Completed" value={t.completed} icon={CheckCircle2} color="bg-emerald-50 text-emerald-600 border border-emerald-100/50 dark:bg-emerald-950/40 dark:text-emerald-400 dark:border-emerald-900/30" goto={() => setView('tasks', { status: 'Completed' })} />
+          <StatCard label="Overdue" value={t.overdue} icon={AlertTriangle} color="bg-red-50 text-red-600 border border-red-100/50 dark:bg-red-950/40 dark:text-red-400 dark:border-red-900/30" goto={() => setView('tasks', { status: 'overdue' })} />
         </div>
       </div>
       <AwaitingDiscussionWidget
@@ -1646,17 +1646,17 @@ function StatCard({ label, value, icon: Icon, color, goto }) {
   return (
     <Card
       onClick={goto}
-      className={`transition ${goto ? 'cursor-pointer hover:shadow-md hover:-translate-y-0.5 hover:border-indigo-300' : ''}`}
+      className={`transition group ${goto ? 'cursor-pointer hover:shadow-md hover:-translate-y-0.5 hover:border-indigo-300 dark:hover:border-indigo-800' : ''}`}
     >
       <CardContent className="p-4">
         <div className="flex items-center justify-between mb-2">
-          <span className="text-sm text-slate-500">{label}</span>
+          <span className="text-sm text-slate-500 dark:text-slate-400">{label}</span>
           <div className={`w-8 h-8 rounded-lg ${color} flex items-center justify-center`}>
             <Icon className="w-4 h-4" />
           </div>
         </div>
-        <div className="text-2xl font-bold">{value}</div>
-        {goto && <div className="text-[10px] text-indigo-500 mt-1">View details →</div>}
+        <div className="text-2xl font-bold text-slate-900 dark:text-slate-100">{value}</div>
+        {goto && <div className="text-[10px] text-indigo-500 dark:text-indigo-400 font-medium mt-1 group-hover:underline">View details →</div>}
       </CardContent>
     </Card>
   );
@@ -1667,10 +1667,10 @@ function RecentTasksList({ tasks, setView }) {
   return (
     <ul className="space-y-2">
       {tasks.map(t => (
-        <li key={t.id} onClick={() => setView && setView('tasks', { openId: t.id })} className={`flex items-center justify-between text-sm border-b pb-2 ${setView ? 'cursor-pointer hover:bg-slate-50 -mx-2 px-2 py-1 rounded' : ''}`}>
+        <li key={t.id} onClick={() => setView && setView('tasks', { openId: t.id })} className={`flex items-center justify-between text-sm border-b dark:border-slate-800 pb-2 ${setView ? 'cursor-pointer hover:bg-slate-50 -mx-2 px-2 py-1 rounded' : ''}`}>
           <div>
-            <div className={`font-medium ${setView ? 'text-indigo-600 hover:underline' : ''}`}>{t.title}</div>
-            <div className="text-xs text-slate-500">{t.category} • Due {t.dueDate ? new Date(t.dueDate).toLocaleDateString() : '-'}</div>
+            <div className={`font-medium ${setView ? 'text-indigo-600 dark:text-indigo-400 hover:underline hover:text-indigo-850 dark:hover:text-indigo-300' : ''}`}>{t.title}</div>
+            <div className="text-xs text-slate-500 dark:text-slate-400">{t.category} • Due {t.dueDate ? new Date(t.dueDate).toLocaleDateString() : '-'}</div>
           </div>
           <div className="flex gap-2 items-center">
             <PriorityBadge priority={t.priority} />
@@ -1686,8 +1686,8 @@ function PageHeader({ title, subtitle, action }) {
   return (
     <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-4 mb-2">
       <div className="min-w-0">
-        <h1 className="text-xl sm:text-2xl font-bold tracking-tight truncate">{title}</h1>
-        {subtitle && <p className="text-xs sm:text-sm text-slate-500">{subtitle}</p>}
+        <h1 className="text-xl sm:text-2xl font-bold tracking-tight truncate text-slate-900 dark:text-slate-100">{title}</h1>
+        {subtitle && <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400">{subtitle}</p>}
       </div>
       {action && <div className="flex-shrink-0">{action}</div>}
     </div>
@@ -1696,24 +1696,24 @@ function PageHeader({ title, subtitle, action }) {
 
 function StatusBadge({ status }) {
   const map = {
-    'New': 'bg-blue-100 text-blue-700',
-    'In Progress': 'bg-amber-100 text-amber-700',
-    'Converted': 'bg-emerald-100 text-emerald-700',
-    'Cancelled': 'bg-red-100 text-red-700',
-    'Pending': 'bg-slate-100 text-slate-700',
-    'Completed': 'bg-emerald-100 text-emerald-700',
+    'New': 'bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300 dark:border dark:border-blue-900/30',
+    'In Progress': 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 dark:border dark:border-amber-900/30',
+    'Converted': 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border dark:border-emerald-900/30',
+    'Cancelled': 'bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-300 dark:border dark:border-red-900/30',
+    'Pending': 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:border dark:border-slate-700',
+    'Completed': 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border dark:border-emerald-900/30',
   };
-  return <span className={`text-xs px-2 py-1 rounded-full font-medium ${map[status] || 'bg-slate-100'}`}>{status}</span>;
+  return <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${map[status] || 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300'}`}>{status}</span>;
 }
 
 function PriorityBadge({ priority }) {
   const map = {
-    Low: 'bg-slate-100 text-slate-700',
-    Medium: 'bg-blue-100 text-blue-700',
-    High: 'bg-orange-100 text-orange-700',
-    Urgent: 'bg-red-100 text-red-700',
+    Low: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:border dark:border-slate-700',
+    Medium: 'bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300 dark:border dark:border-blue-900/30',
+    High: 'bg-orange-100 text-orange-700 dark:bg-orange-950/40 dark:text-orange-300 dark:border dark:border-orange-900/30',
+    Urgent: 'bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-300 dark:border dark:border-red-900/30',
   };
-  return <span className={`text-xs px-2 py-1 rounded-full font-medium ${map[priority] || 'bg-slate-100'}`}>{priority}</span>;
+  return <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${map[priority] || 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300'}`}>{priority}</span>;
 }
 
 function Field({ label, children, className = '' }) {
