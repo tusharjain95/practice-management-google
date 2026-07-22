@@ -10,7 +10,7 @@ import {
   IndianRupee, Building2, ChevronLeft, RotateCcw, Upload, KeyRound,
   BarChart3, ClipboardCheck, ShieldCheck, Database, DownloadCloud, UploadCloud,
   MessageSquare, Menu, X, ArrowUpDown, ArrowUp, ArrowDown, Send, Loader2,
-  Sun, Moon,
+  Sun, Moon, FilePlus, PlusCircle, MinusCircle,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -3909,12 +3909,35 @@ function ClientLedger({ clientId, onClose, user }) {
   const { call } = useApi();
   const [data, setData] = useState(null);
   const [payOpen, setPayOpen] = useState(false);
+  const [invoiceOpen, setInvoiceOpen] = useState(false);
+  const [adjOpen, setAdjOpen] = useState(false);
+  const [branding, setBranding] = useState({});
+
   async function load() {
     try { setData(await call(`clients/${clientId}/ledger`)); } catch (e) { toast.error(e.message); }
   }
+
   useEffect(() => { load(); }, [clientId]);
+  useEffect(() => {
+    call('branding').then(b => setBranding(b.branding || {})).catch(() => {});
+  }, []);
+
+  async function deleteAdj(id) {
+    if (!confirm('Are you sure you want to delete this direct ledger entry?')) return;
+    try {
+      await call(`ledger-adjustments/${id}`, { method: 'DELETE' });
+      toast.success('Ledger entry deleted');
+      load();
+    } catch (e) {
+      toast.error(e.message);
+    }
+  }
+
   if (!data) return null;
   const c = data.client;
+  const totalDebits = data.totalDebits ?? data.billed;
+  const totalCredits = data.totalCredits ?? data.received;
+
   return (
     <Dialog open onOpenChange={onClose}>
       <DialogContent className="max-w-4xl w-[95vw] max-h-[90vh] overflow-y-auto p-4 sm:p-6">
@@ -3922,14 +3945,22 @@ function ClientLedger({ clientId, onClose, user }) {
           <DialogTitle>{c.name} — Ledger</DialogTitle>
           <DialogDescription>{c.company || 'Individual'} • {c.phone} {c.gstin ? `• GSTIN: ${c.gstin}` : ''}</DialogDescription>
         </DialogHeader>
-        <div className="grid grid-cols-4 gap-3">
-          <SummaryCard label="Opening" value={c.openingBalance} subtitle={`as on ${c.openingBalanceAsOn}`} />
-          <SummaryCard label="Billed" value={data.billed} subtitle={`${data.invoices.length} invoices`} />
-          <SummaryCard label="Received" value={data.received} subtitle={`${data.payments.length} payments`} color="text-emerald-600" />
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <SummaryCard label="Opening" value={c.openingBalance} subtitle={`as on ${c.openingBalanceAsOn || 'start'}`} />
+          <SummaryCard label="Total Debits" value={totalDebits} subtitle={`${data.invoices.length} inv${data.debitAdjustments ? ` + ₹${data.debitAdjustments} debits` : ''}`} />
+          <SummaryCard label="Total Credits" value={totalCredits} subtitle={`${data.payments.length} pay${data.creditAdjustments ? ` + ₹${data.creditAdjustments} credits` : ''}`} color="text-emerald-600" />
           <SummaryCard label="Net Due" value={data.netDue} highlight color={data.netDue > 0 ? 'text-red-600' : 'text-emerald-600'} />
         </div>
-        <div className="flex gap-2">
-          <Button onClick={() => setPayOpen(true)}><Wallet className="w-4 h-4 mr-2" />Record Payment</Button>
+        <div className="flex flex-wrap gap-2">
+          <Button onClick={() => setInvoiceOpen(true)} className="bg-indigo-600 hover:bg-indigo-700 text-white">
+            <FilePlus className="w-4 h-4 mr-2" />Generate Invoice
+          </Button>
+          <Button variant="outline" className="border-amber-300 text-amber-900 bg-amber-50 hover:bg-amber-100" onClick={() => setAdjOpen(true)}>
+            <PlusCircle className="w-4 h-4 mr-2 text-amber-700" />Direct Debit / Credit
+          </Button>
+          <Button variant="outline" onClick={() => setPayOpen(true)}>
+            <Wallet className="w-4 h-4 mr-2 text-emerald-600" />Record Payment
+          </Button>
           <Button variant="outline" onClick={() => exportToExcel(data.ledger, `ledger_${c.name.replace(/\s+/g,'_')}.xlsx`)}>
             <FileSpreadsheet className="w-4 h-4 mr-2" />Export Ledger
           </Button>
@@ -3945,25 +3976,212 @@ function ClientLedger({ clientId, onClose, user }) {
                   <TableHead className="text-right">Debit</TableHead>
                   <TableHead className="text-right">Credit</TableHead>
                   <TableHead className="text-right">Balance</TableHead>
+                  <TableHead className="w-10"></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {data.ledger.map((e, i) => (
                   <TableRow key={i}>
-                    <TableCell className="text-sm">{e.date}</TableCell>
+                    <TableCell className="text-sm whitespace-nowrap">{e.date}</TableCell>
                     <TableCell>
-                      <span className={`text-sm ${e.type === 'opening' ? 'font-semibold' : ''}`}>{e.label}</span>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className={`text-sm ${e.type === 'opening' ? 'font-semibold' : ''}`}>{e.label}</span>
+                        {e.type === 'debit_adjustment' && <Badge variant="outline" className="text-indigo-700 bg-indigo-50 border-indigo-200 text-[10px]">Direct Debit</Badge>}
+                        {e.type === 'credit_adjustment' && <Badge variant="outline" className="text-emerald-700 bg-emerald-50 border-emerald-200 text-[10px]">Direct Credit</Badge>}
+                      </div>
                     </TableCell>
                     <TableCell className="text-right text-sm">{e.debit > 0 ? `₹${e.debit.toLocaleString('en-IN')}` : '-'}</TableCell>
                     <TableCell className="text-right text-sm text-emerald-600">{e.credit > 0 ? `₹${e.credit.toLocaleString('en-IN')}` : '-'}</TableCell>
                     <TableCell className={`text-right font-medium ${e.balance > 0 ? 'text-red-600' : 'text-slate-700'}`}>₹{e.balance.toLocaleString('en-IN')}</TableCell>
+                    <TableCell className="text-right p-1">
+                      {e.id && (e.type === 'debit_adjustment' || e.type === 'credit_adjustment') && (user?.role === 'admin' || user?.role === 'owner' || !user?.role) && (
+                        <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-slate-400 hover:text-red-600" onClick={() => deleteAdj(e.id)} title="Delete adjustment">
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </Button>
+                      )}
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
             </Table>
           </CardContent>
         </Card>
-        {payOpen && <PaymentForm clientId={clientId} client={c} invoices={data.invoices} onClose={() => setPayOpen(false)} onSaved={() => { setPayOpen(false); load(); }} />}
+
+        {invoiceOpen && (
+          <InvoiceForm
+            initialClientId={clientId}
+            clients={[c]}
+            branding={branding}
+            onClose={() => setInvoiceOpen(false)}
+            onSaved={(inv) => { setInvoiceOpen(false); load(); generateInvoicePDF(inv, branding); }}
+          />
+        )}
+        {adjOpen && (
+          <LedgerAdjustmentForm
+            clientId={clientId}
+            client={c}
+            onClose={() => setAdjOpen(false)}
+            onSaved={() => { setAdjOpen(false); load(); }}
+          />
+        )}
+        {payOpen && (
+          <PaymentForm
+            clientId={clientId}
+            client={c}
+            invoices={data.invoices}
+            onClose={() => setPayOpen(false)}
+            onSaved={() => { setPayOpen(false); load(); }}
+          />
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function LedgerAdjustmentForm({ clientId, client, onClose, onSaved }) {
+  const { call } = useApi();
+  const [f, setF] = useState({
+    clientId: clientId || client?.id || '',
+    type: 'debit',
+    amount: '',
+    date: new Date().toISOString().slice(0, 10),
+    description: 'Simplicity Sale',
+    reference: '',
+    notes: '',
+  });
+  const [saving, setSaving] = useState(false);
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!f.amount || Number(f.amount) <= 0) {
+      toast.error('Please enter a valid positive amount');
+      return;
+    }
+    setSaving(true);
+    try {
+      await call('ledger-adjustments', {
+        method: 'POST',
+        body: { ...f, amount: Number(f.amount) }
+      });
+      const typeLabel = f.type === 'debit' ? 'Direct Debit (+ Receivable)' : 'Direct Credit (- Receivable)';
+      toast.success(`${typeLabel} entry of ₹${Number(f.amount).toLocaleString('en-IN')} saved`);
+      onSaved();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent className="max-w-lg w-[95vw] p-4 sm:p-6">
+        <DialogHeader>
+          <DialogTitle>Direct Ledger Entry (Debit / Credit)</DialogTitle>
+          <DialogDescription>
+            Adjust receivables for <strong>{client?.name || client?.clientName || 'Client'}</strong> directly without needing a full itemized invoice.
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={submit} className="space-y-4">
+          <Field label="Entry Type *">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-1">
+              <button
+                type="button"
+                onClick={() => setF({ ...f, type: 'debit', description: f.description === 'Ledger Credit Discount' ? 'Simplicity Sale' : f.description || 'Simplicity Sale' })}
+                className={`p-3 rounded-lg border text-left flex flex-col gap-1 transition-all ${
+                  f.type === 'debit'
+                    ? 'border-indigo-600 bg-indigo-50/80 text-indigo-950 font-medium shadow-sm ring-1 ring-indigo-500'
+                    : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                }`}
+              >
+                <div className="flex items-center gap-1.5 font-semibold text-indigo-700 text-sm">
+                  <PlusCircle className="w-4 h-4" />
+                  <span>Debit (+ Receivable)</span>
+                </div>
+                <div className="text-[11px] text-slate-500 leading-snug">
+                  Increases receivable balance owed by client (e.g. Simplicity Sale, Fee, Debit Note)
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setF({ ...f, type: 'credit', description: f.description === 'Simplicity Sale' ? 'Ledger Credit Discount' : f.description || 'Ledger Credit Discount' })}
+                className={`p-3 rounded-lg border text-left flex flex-col gap-1 transition-all ${
+                  f.type === 'credit'
+                    ? 'border-emerald-600 bg-emerald-50/80 text-emerald-950 font-medium shadow-sm ring-1 ring-emerald-500'
+                    : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                }`}
+              >
+                <div className="flex items-center gap-1.5 font-semibold text-emerald-700 text-sm">
+                  <MinusCircle className="w-4 h-4" />
+                  <span>Credit (- Receivable)</span>
+                </div>
+                <div className="text-[11px] text-slate-500 leading-snug">
+                  Decreases receivable balance owed by client (e.g. Discount, Waiver, Credit Note)
+                </div>
+              </button>
+            </div>
+          </Field>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Field label="Amount (₹) *">
+              <Input
+                type="number"
+                step="0.01"
+                placeholder="0.00"
+                value={f.amount}
+                onChange={e => setF({ ...f, amount: e.target.value })}
+                required
+              />
+            </Field>
+
+            <Field label="Entry Date *">
+              <Input
+                type="date"
+                value={f.date}
+                onChange={e => setF({ ...f, date: e.target.value })}
+                required
+              />
+            </Field>
+          </div>
+
+          <Field label="Particulars / Description *">
+            <Input
+              value={f.description}
+              onChange={e => setF({ ...f, description: e.target.value })}
+              placeholder={f.type === 'debit' ? 'e.g. Simplicity Sale - Services' : 'e.g. Volume Discount / Waiver'}
+              required
+            />
+          </Field>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Field label="Reference / Voucher # (Optional)">
+              <Input
+                value={f.reference}
+                onChange={e => setF({ ...f, reference: e.target.value })}
+                placeholder="e.g. DB-101 or CR-202"
+              />
+            </Field>
+            <Field label="Notes (Optional)">
+              <Input
+                value={f.notes}
+                onChange={e => setF({ ...f, notes: e.target.value })}
+                placeholder="Internal memo"
+              />
+            </Field>
+          </div>
+
+          <DialogFooter className="mt-4">
+            <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+            <Button
+              type="submit"
+              disabled={saving}
+              className={f.type === 'debit' ? 'bg-indigo-600 hover:bg-indigo-700 text-white' : 'bg-emerald-600 hover:bg-emerald-700 text-white'}
+            >
+              {saving ? 'Saving...' : `Save ${f.type === 'debit' ? 'Debit (+)' : 'Credit (-)'} Entry`}
+            </Button>
+          </DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
   );
@@ -4338,10 +4556,11 @@ function InvoicesView({ user, viewParams = {}, setView }) {
   );
 }
 
-function InvoiceForm({ clients, branding, onClose, onSaved }) {
+function InvoiceForm({ clients = [], branding, initialClientId, onClose, onSaved }) {
   const { call } = useApi();
+  const [clientList, setClientList] = useState(clients || []);
   const [f, setF] = useState({
-    clientId: '', clientName: '', companyName: '', clientAddress: '', clientGstin: '',
+    clientId: initialClientId || '', clientName: '', companyName: '', clientAddress: '', clientGstin: '',
     items: [{ name: '', description: '', qty: 1, rate: 0 }],
     gstApplicable: true,
     dueDate: new Date(Date.now() + 15 * 86400000).toISOString().slice(0, 10),
@@ -4349,10 +4568,50 @@ function InvoiceForm({ clients, branding, onClose, onSaved }) {
   });
   const [saving, setSaving] = useState(false);
 
-  function pickClient(id) {
-    const c = clients.find(x => x.id === id);
+  function pickClientObj(c) {
     if (!c) return;
-    setF(prev => ({ ...prev, clientId: id, clientName: c.name, companyName: c.company || '', clientAddress: c.address || '', clientGstin: c.gstin || '' }));
+    setF(prev => ({
+      ...prev,
+      clientId: c.id,
+      clientName: c.name || c.clientName || '',
+      companyName: c.company || c.companyName || '',
+      clientAddress: c.address || c.clientAddress || '',
+      clientGstin: c.gstin || c.clientGstin || ''
+    }));
+  }
+
+  useEffect(() => {
+    async function init() {
+      let list = clients || [];
+      if (!list.length) {
+        try {
+          const res = await call('clients');
+          list = res.clients || res.data || [];
+          setClientList(list);
+        } catch (e) {}
+      } else {
+        setClientList(list);
+      }
+
+      if (initialClientId) {
+        const c = list.find(x => x.id === initialClientId);
+        if (c) {
+          pickClientObj(c);
+        } else {
+          try {
+            const res = await call(`clients/${initialClientId}`);
+            if (res.client) pickClientObj(res.client);
+          } catch (e) {}
+        }
+      }
+    }
+    init();
+  }, [initialClientId]);
+
+  function pickClient(id) {
+    const c = clientList.find(x => x.id === id);
+    if (!c) return;
+    pickClientObj(c);
   }
   function updateItem(i, k, v) { const arr = [...f.items]; arr[i] = { ...arr[i], [k]: v }; setF({ ...f, items: arr }); }
   function addItem() { setF({ ...f, items: [...f.items, { name: '', description: '', qty: 1, rate: 0 }] }); }
@@ -4388,7 +4647,7 @@ function InvoiceForm({ clients, branding, onClose, onSaved }) {
                   <SelectTrigger><SelectValue placeholder="Pick a client..." /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="new">+ New / Manual Entry</SelectItem>
-                    {clients.map(c => <SelectItem key={c.id} value={c.id}>{c.name}{c.company ? ` (${c.company})` : ''}</SelectItem>)}
+                    {clientList.map(c => <SelectItem key={c.id} value={c.id}>{c.name}{c.company ? ` (${c.company})` : ''}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </Field>
@@ -4523,6 +4782,14 @@ function ReceivablesView({ user, setView }) {
   const [data, setData] = useState(null);
   const [sortField, setSortField] = useState('total');
   const [sortOrder, setSortOrder] = useState('desc');
+  const [ledgerClientId, setLedgerClientId] = useState(null);
+  const [invoiceClientId, setInvoiceClientId] = useState(null);
+  const [adjClient, setAdjClient] = useState(null);
+  const [branding, setBranding] = useState({});
+
+  useEffect(() => {
+    call('branding').then(b => setBranding(b.branding || {})).catch(() => {});
+  }, []);
 
   function handleSort(field) {
     if (sortField === field) {
@@ -4664,11 +4931,12 @@ function ReceivablesView({ user, setView }) {
                     <SortableHeader label="90+ d" field="b90plus" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} className="text-right" />
                     <SortableHeader label="Total Due" field="total" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} className="text-right font-bold" />
                     <SortableHeader label="Oldest" field="oldestInvoiceDate" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} />
+                    <TableHead className="text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {sortedClients.map(r => (
-                    <TableRow key={r.clientId} className="hover:bg-slate-50 cursor-pointer" onClick={() => r.clientId && !r.clientId.startsWith('_orphan_') && setView('clients', { openId: r.clientId })}>
+                    <TableRow key={r.clientId} className="hover:bg-slate-50 cursor-pointer" onClick={() => r.clientId && !r.clientId.startsWith('_orphan_') && setLedgerClientId(r.clientId)}>
                       <TableCell>
                         <div className="font-medium text-indigo-600 hover:underline">{r.clientName}</div>
                         {r.companyName && <div className="text-xs text-slate-500">{r.companyName}</div>}
@@ -4685,6 +4953,45 @@ function ReceivablesView({ user, setView }) {
                       <TableCell className="text-right text-sm text-red-900 font-semibold">{r.b90plus > 0 ? `₹${r.b90plus.toLocaleString('en-IN')}` : '-'}</TableCell>
                       <TableCell className="text-right font-bold">₹{r.total.toLocaleString('en-IN')}</TableCell>
                       <TableCell className="text-xs text-slate-500">{r.oldestInvoiceDate || '-'}</TableCell>
+                      <TableCell className="text-right" onClick={e => e.stopPropagation()}>
+                        <div className="flex items-center justify-end gap-1">
+                          {r.clientId && !r.clientId.startsWith('_orphan_') && (
+                            <>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7 text-xs px-2 gap-1 border-indigo-200 text-indigo-700 hover:bg-indigo-50"
+                                onClick={() => setInvoiceClientId(r.clientId)}
+                                title="Generate Invoice for client"
+                              >
+                                <FilePlus className="w-3.5 h-3.5" />
+                                <span className="hidden sm:inline">Invoice</span>
+                              </Button>
+
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7 text-xs px-2 gap-1 border-amber-200 text-amber-800 hover:bg-amber-50"
+                                onClick={() => setAdjClient({ id: r.clientId, name: r.clientName, company: r.companyName })}
+                                title="Direct Debit or Credit Ledger Entry"
+                              >
+                                <PlusCircle className="w-3.5 h-3.5 text-amber-600" />
+                                <span className="hidden sm:inline">Debit/Credit</span>
+                              </Button>
+
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 w-7 p-0"
+                                onClick={() => setLedgerClientId(r.clientId)}
+                                title="View Client Ledger"
+                              >
+                                <Receipt className="w-4 h-4 text-slate-600" />
+                              </Button>
+                            </>
+                          )}
+                        </div>
+                      </TableCell>
                     </TableRow>
                   ))}
                   <TableRow className="bg-slate-100 font-bold">
@@ -4696,12 +5003,37 @@ function ReceivablesView({ user, setView }) {
                     <TableCell className="text-right text-red-900">₹{t.b90plus.toLocaleString('en-IN')}</TableCell>
                     <TableCell className="text-right text-lg">₹{t.total.toLocaleString('en-IN')}</TableCell>
                     <TableCell />
+                    <TableCell />
                   </TableRow>
                 </TableBody>
               </Table>
             </CardContent>
           </Card>
         </>
+      )}
+
+      {ledgerClientId && (
+        <ClientLedger
+          clientId={ledgerClientId}
+          onClose={() => { setLedgerClientId(null); load(); }}
+          user={user}
+        />
+      )}
+      {invoiceClientId && (
+        <InvoiceForm
+          initialClientId={invoiceClientId}
+          branding={branding}
+          onClose={() => setInvoiceClientId(null)}
+          onSaved={(inv) => { setInvoiceClientId(null); load(); generateInvoicePDF(inv, branding); }}
+        />
+      )}
+      {adjClient && (
+        <LedgerAdjustmentForm
+          clientId={adjClient.id}
+          client={adjClient}
+          onClose={() => setAdjClient(null)}
+          onSaved={() => { setAdjClient(null); load(); }}
+        />
       )}
     </div>
   );

@@ -518,6 +518,10 @@ async function ensureIndexes(db) {
       db.collection('payments').createIndex({ invoiceId: 1 }).catch(() => {}),
       db.collection('payments').createIndex({ clientId: 1 }).catch(() => {}),
 
+      db.collection('ledger_adjustments').createIndex({ id: 1 }, { unique: true }).catch(() => {}),
+      db.collection('ledger_adjustments').createIndex({ orgId: 1 }).catch(() => {}),
+      db.collection('ledger_adjustments').createIndex({ clientId: 1 }).catch(() => {}),
+
       db.collection('settings').createIndex({ id: 1, orgId: 1 }).catch(() => {}),
 
       db.collection('quotations').createIndex({ id: 1 }, { unique: true }).catch(() => {}),
@@ -2205,10 +2209,13 @@ async function handle(request, ctx) {
         for (const c of pageClients) {
           const invoices = await db.collection('invoices').find({ clientId: c.id, orgId: me.activeOrgId }).project({ _id: 0 }).toArray();
           const payments = await db.collection('payments').find({ clientId: c.id, orgId: me.activeOrgId }).project({ _id: 0 }).toArray();
+          const adjustments = await db.collection('ledger_adjustments').find({ clientId: c.id, orgId: me.activeOrgId }).project({ _id: 0 }).toArray();
           const billed = invoices.reduce((s, i) => s + (i.total || 0), 0);
+          const debitAdjustments = adjustments.filter(a => a.type === 'debit').reduce((s, a) => s + (a.amount || 0), 0);
           const received = payments.reduce((s, p) => s + (p.amount || 0), 0);
-          const netDue = +((c.openingBalance || 0) + billed - received).toFixed(2);
-          enriched.push({ ...c, billed, received, netDue, invoiceCount: invoices.length });
+          const creditAdjustments = adjustments.filter(a => a.type === 'credit').reduce((s, a) => s + (a.amount || 0), 0);
+          const netDue = +((c.openingBalance || 0) + billed + debitAdjustments - received - creditAdjustments).toFixed(2);
+          enriched.push({ ...c, billed: billed + debitAdjustments, received: received + creditAdjustments, netDue, invoiceCount: invoices.length, debitAdjustments, creditAdjustments });
         }
       }
 
@@ -2371,18 +2378,75 @@ async function handle(request, ctx) {
       if (sub === 'ledger') {
         const invoices = await db.collection('invoices').find({ clientId: id, orgId: me.activeOrgId }).project({ _id: 0 }).sort({ createdAt: 1 }).toArray();
         const payments = await db.collection('payments').find({ clientId: id, orgId: me.activeOrgId }).project({ _id: 0 }).sort({ date: 1 }).toArray();
+        const adjustments = await db.collection('ledger_adjustments').find({ clientId: id, orgId: me.activeOrgId }).project({ _id: 0 }).sort({ date: 1 }).toArray();
+
         const billed = invoices.reduce((s, i) => s + (i.total || 0), 0);
+        const debitAdjustments = adjustments.filter(a => a.type === 'debit').reduce((s, a) => s + (a.amount || 0), 0);
         const received = payments.reduce((s, p) => s + (p.amount || 0), 0);
-        const netDue = +((client.openingBalance || 0) + billed - received).toFixed(2);
+        const creditAdjustments = adjustments.filter(a => a.type === 'credit').reduce((s, a) => s + (a.amount || 0), 0);
+
+        const totalDebits = +(billed + debitAdjustments).toFixed(2);
+        const totalCredits = +(received + creditAdjustments).toFixed(2);
+        const netDue = +((client.openingBalance || 0) + totalDebits - totalCredits).toFixed(2);
+
         // Build ledger entries
         const entries = [];
-        entries.push({ type: 'opening', date: client.openingBalanceAsOn, label: 'Opening Balance', debit: client.openingBalance || 0, credit: 0 });
-        invoices.forEach(i => entries.push({ type: 'invoice', date: i.createdAt.slice(0, 10), label: `Invoice ${i.invoiceNumber}`, debit: i.total, credit: 0, id: i.id }));
-        payments.forEach(p => entries.push({ type: 'payment', date: p.date, label: `Payment via ${p.mode}${p.reference ? ' (' + p.reference + ')' : ''}`, debit: 0, credit: p.amount, id: p.id }));
-        entries.sort((a, b) => a.date.localeCompare(b.date));
+        if (client.openingBalance) {
+          entries.push({
+            type: 'opening',
+            date: client.openingBalanceAsOn || (client.createdAt ? client.createdAt.slice(0, 10) : '2026-01-01'),
+            label: 'Opening Balance',
+            debit: client.openingBalance || 0,
+            credit: 0
+          });
+        }
+        invoices.forEach(i => entries.push({
+          type: 'invoice',
+          date: i.createdAt ? i.createdAt.slice(0, 10) : new Date().toISOString().slice(0, 10),
+          label: `Invoice ${i.invoiceNumber}`,
+          debit: i.total,
+          credit: 0,
+          id: i.id
+        }));
+        payments.forEach(p => entries.push({
+          type: 'payment',
+          date: p.date,
+          label: `Payment via ${p.mode}${p.reference ? ' (' + p.reference + ')' : ''}`,
+          debit: 0,
+          credit: p.amount,
+          id: p.id
+        }));
+        adjustments.forEach(a => entries.push({
+          type: a.type === 'debit' ? 'debit_adjustment' : 'credit_adjustment',
+          date: a.date,
+          label: `${a.type === 'debit' ? 'Debit Entry: ' : 'Credit Entry: '}${a.description}${a.reference ? ' (' + a.reference + ')' : ''}`,
+          debit: a.type === 'debit' ? a.amount : 0,
+          credit: a.type === 'credit' ? a.amount : 0,
+          id: a.id,
+          rawType: a.type
+        }));
+
+        entries.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
         let running = 0;
-        entries.forEach(e => { running += (e.debit - e.credit); e.balance = +running.toFixed(2); });
-        return json({ client, invoices, payments, billed, received, netDue, ledger: entries });
+        entries.forEach(e => {
+          running += ((e.debit || 0) - (e.credit || 0));
+          e.balance = +running.toFixed(2);
+        });
+
+        return json({
+          client,
+          invoices,
+          payments,
+          adjustments,
+          billed,
+          debitAdjustments,
+          received,
+          creditAdjustments,
+          totalDebits,
+          totalCredits,
+          netDue,
+          ledger: entries
+        });
       }
       return json({ client });
     }
@@ -2573,6 +2637,63 @@ async function handle(request, ctx) {
       return json({ ok: true });
     }
 
+    // -------- LEDGER ADJUSTMENTS --------
+    if (route === 'ledger-adjustments' && method === 'GET') {
+      const filter = { orgId: me.activeOrgId };
+      const clientId = url.searchParams.get('clientId');
+      if (clientId) filter.clientId = clientId;
+      const { page, limit } = getPaginationParams(url.searchParams);
+      const total = await db.collection('ledger_adjustments').countDocuments(filter);
+      const data = await db.collection('ledger_adjustments').find(filter).project({ _id: 0 }).sort({ date: -1, createdAt: -1 }).skip((page - 1) * limit).limit(limit).toArray();
+      return json({ adjustments: data, data, page, limit, total, hasMore: total > page * limit });
+    }
+
+    if (route === 'ledger-adjustments' && method === 'POST') {
+      if (me.role === 'staff') return json({ error: 'Forbidden' }, 403);
+      const body = await request.json();
+      if (!body.clientId) return json({ error: 'Client ID is required' }, 400);
+      if (!['debit', 'credit'].includes(body.type)) return json({ error: 'Type must be debit or credit' }, 400);
+      if (!body.amount || Number(body.amount) <= 0) return json({ error: 'Valid positive amount is required' }, 400);
+
+      const client = await db.collection('clients').findOne({ id: body.clientId, orgId: me.activeOrgId });
+
+      const adjustment = {
+        id: 'adj_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
+        orgId: me.activeOrgId,
+        clientId: body.clientId,
+        clientName: client ? client.name : (body.clientName || 'Client'),
+        type: body.type, // 'debit' or 'credit'
+        amount: Math.abs(Number(body.amount)),
+        date: body.date || new Date().toISOString().slice(0, 10),
+        description: body.description || body.particulars || (body.type === 'debit' ? 'Direct Debit Entry' : 'Direct Credit Entry'),
+        reference: body.reference || '',
+        notes: body.notes || '',
+        createdAt: new Date().toISOString(),
+        createdBy: me.email || me.id,
+      };
+
+      await db.collection('ledger_adjustments').insertOne(adjustment);
+      logActivity(db, me, 'create', 'ledger_adjustment', adjustment.id, {
+        clientId: adjustment.clientId,
+        type: adjustment.type,
+        amount: adjustment.amount,
+        description: adjustment.description,
+      });
+
+      const { _id, ...safe } = adjustment;
+      return json({ ok: true, adjustment: safe });
+    }
+
+    if (route.startsWith('ledger-adjustments/') && method === 'DELETE') {
+      if (me.role !== 'admin') return json({ error: 'Forbidden' }, 403);
+      const id = route.split('/')[1];
+      const adj = await db.collection('ledger_adjustments').findOne({ id, orgId: me.activeOrgId });
+      if (!adj) return json({ error: 'Adjustment not found' }, 404);
+      await db.collection('ledger_adjustments').deleteOne({ id, orgId: me.activeOrgId });
+      logActivity(db, me, 'delete', 'ledger_adjustment', id);
+      return json({ ok: true });
+    }
+
     // -------- BRANDING (single doc per org) --------
     if (route === 'branding' && method === 'GET') {
       const b = await db.collection('settings').findOne({ id: 'branding', orgId: me.activeOrgId }, { projection: { _id: 0 } });
@@ -2758,6 +2879,17 @@ async function handle(request, ctx) {
           row[bucket] += inv.dueAmount;
           if (!row.oldestInvoiceDate || dueDate < new Date(row.oldestInvoiceDate)) {
             row.oldestInvoiceDate = (inv.dueDate || inv.createdAt.slice(0, 10));
+          }
+        }
+
+        // Include direct debit & credit adjustments
+        if (c) {
+          const clientAdjs = await db.collection('ledger_adjustments').find({ clientId: c.id, orgId: me.activeOrgId }).toArray();
+          const debitAdjTotal = clientAdjs.filter(a => a.type === 'debit').reduce((s, a) => s + (a.amount || 0), 0);
+          const creditAdjTotal = clientAdjs.filter(a => a.type === 'credit').reduce((s, a) => s + (a.amount || 0), 0);
+          const netAdj = debitAdjTotal - creditAdjTotal;
+          if (netAdj !== 0) {
+            row.current = +(row.current + netAdj).toFixed(2);
           }
         }
 
