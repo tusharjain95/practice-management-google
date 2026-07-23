@@ -10,7 +10,7 @@ import {
   IndianRupee, Building2, ChevronLeft, RotateCcw, Upload, KeyRound,
   BarChart3, ClipboardCheck, ShieldCheck, Database, DownloadCloud, UploadCloud,
   MessageSquare, Menu, X, ArrowUpDown, ArrowUp, ArrowDown, Send, Loader2,
-  Sun, Moon, FilePlus, PlusCircle, MinusCircle,
+  Sun, Moon, FilePlus, PlusCircle, MinusCircle, Eye,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -3911,6 +3911,8 @@ function ClientLedger({ clientId, onClose, user }) {
   const [payOpen, setPayOpen] = useState(false);
   const [invoiceOpen, setInvoiceOpen] = useState(false);
   const [adjOpen, setAdjOpen] = useState(false);
+  const [viewInvoice, setViewInvoice] = useState(null);
+  const [editInvoice, setEditInvoice] = useState(null);
   const [branding, setBranding] = useState({});
 
   async function load() {
@@ -3976,36 +3978,113 @@ function ClientLedger({ clientId, onClose, user }) {
                   <TableHead className="text-right">Debit</TableHead>
                   <TableHead className="text-right">Credit</TableHead>
                   <TableHead className="text-right">Balance</TableHead>
-                  <TableHead className="w-10"></TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {data.ledger.map((e, i) => (
-                  <TableRow key={i}>
-                    <TableCell className="text-sm whitespace-nowrap">{e.date}</TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className={`text-sm ${e.type === 'opening' ? 'font-semibold' : ''}`}>{e.label}</span>
-                        {e.type === 'debit_adjustment' && <Badge variant="outline" className="text-indigo-700 bg-indigo-50 border-indigo-200 text-[10px]">Direct Debit</Badge>}
-                        {e.type === 'credit_adjustment' && <Badge variant="outline" className="text-emerald-700 bg-emerald-50 border-emerald-200 text-[10px]">Direct Credit</Badge>}
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-right text-sm">{e.debit > 0 ? `₹${e.debit.toLocaleString('en-IN')}` : '-'}</TableCell>
-                    <TableCell className="text-right text-sm text-emerald-600">{e.credit > 0 ? `₹${e.credit.toLocaleString('en-IN')}` : '-'}</TableCell>
-                    <TableCell className={`text-right font-medium ${e.balance > 0 ? 'text-red-600' : 'text-slate-700'}`}>₹{e.balance.toLocaleString('en-IN')}</TableCell>
-                    <TableCell className="text-right p-1">
-                      {e.id && (e.type === 'debit_adjustment' || e.type === 'credit_adjustment') && (user?.role === 'admin' || user?.role === 'owner' || !user?.role) && (
-                        <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-slate-400 hover:text-red-600" onClick={() => deleteAdj(e.id)} title="Delete adjustment">
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </Button>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))}
+                {data.ledger.map((e, i) => {
+                  const invObj = e.type === 'invoice' ? (data.invoices || []).find(x => x.id === e.id) : null;
+                  return (
+                    <TableRow key={i}>
+                      <TableCell className="text-sm whitespace-nowrap">{e.date}</TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          {e.type === 'invoice' ? (
+                            <button
+                              type="button"
+                              onClick={() => setViewInvoice(invObj || { id: e.id, invoiceNumber: e.label.replace('Invoice ', '') })}
+                              className="text-sm font-semibold text-indigo-600 hover:text-indigo-800 hover:underline flex items-center gap-1 group text-left"
+                              title="Click to view & edit invoice"
+                            >
+                              <span>{e.label}</span>
+                            </button>
+                          ) : (
+                            <span className={`text-sm ${e.type === 'opening' ? 'font-semibold' : ''}`}>{e.label}</span>
+                          )}
+                          {e.type === 'debit_adjustment' && <Badge variant="outline" className="text-indigo-700 bg-indigo-50 border-indigo-200 text-[10px]">Direct Debit</Badge>}
+                          {e.type === 'credit_adjustment' && <Badge variant="outline" className="text-emerald-700 bg-emerald-50 border-emerald-200 text-[10px]">Direct Credit</Badge>}
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-right text-sm">{e.debit > 0 ? `₹${e.debit.toLocaleString('en-IN')}` : '-'}</TableCell>
+                      <TableCell className="text-right text-sm text-emerald-600">{e.credit > 0 ? `₹${e.credit.toLocaleString('en-IN')}` : '-'}</TableCell>
+                      <TableCell className={`text-right font-medium ${e.balance > 0 ? 'text-red-600' : 'text-slate-700'}`}>₹{e.balance.toLocaleString('en-IN')}</TableCell>
+                      <TableCell className="text-right p-1">
+                        {e.type === 'invoice' && (
+                          <div className="flex items-center justify-end gap-1">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 px-2 text-xs gap-1 text-indigo-700 hover:bg-indigo-50 border border-indigo-100"
+                              onClick={() => setViewInvoice(invObj || { id: e.id, invoiceNumber: e.label.replace('Invoice ', '') })}
+                              title="View invoice details"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                              <span className="hidden sm:inline">View</span>
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 px-2 text-xs gap-1 text-slate-700 hover:bg-slate-100 border border-slate-200"
+                              onClick={() => setEditInvoice(invObj || { id: e.id, clientId, clientName: c.name })}
+                              title="Edit invoice"
+                            >
+                              <Edit className="w-3.5 h-3.5 text-slate-600" />
+                              <span className="hidden sm:inline">Edit</span>
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 w-7 p-0 text-slate-400 hover:text-indigo-600"
+                              onClick={() => generateInvoicePDF(invObj || { id: e.id, invoiceNumber: e.label.replace('Invoice ', ''), clientName: c.name, total: e.debit }, branding)}
+                              title="Download Invoice PDF"
+                            >
+                              <FileDown className="w-3.5 h-3.5" />
+                            </Button>
+                          </div>
+                        )}
+                        {e.id && (e.type === 'debit_adjustment' || e.type === 'credit_adjustment') && (user?.role === 'admin' || user?.role === 'owner' || !user?.role) && (
+                          <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-slate-400 hover:text-red-600" onClick={() => deleteAdj(e.id)} title="Delete adjustment">
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </Button>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
           </CardContent>
         </Card>
+
+        {viewInvoice && (
+          <InvoiceViewModal
+            invoice={typeof viewInvoice === 'object' && viewInvoice.items ? viewInvoice : null}
+            invoiceId={typeof viewInvoice === 'object' ? viewInvoice.id : viewInvoice}
+            branding={branding}
+            onClose={() => setViewInvoice(null)}
+            onEdit={(invToEdit) => {
+              setViewInvoice(null);
+              setEditInvoice(invToEdit);
+            }}
+            onRecordPayment={() => {
+              setViewInvoice(null);
+              setPayOpen(true);
+            }}
+          />
+        )}
+        {editInvoice && (
+          <InvoiceForm
+            invoiceToEdit={editInvoice}
+            clients={[c]}
+            branding={branding}
+            onClose={() => setEditInvoice(null)}
+            onSaved={(inv) => {
+              setEditInvoice(null);
+              load();
+              generateInvoicePDF(inv, branding);
+            }}
+          />
+        )}
 
         {invoiceOpen && (
           <InvoiceForm
@@ -4376,6 +4455,8 @@ function InvoicesView({ user, viewParams = {}, setView }) {
   const [statusFilter, setStatusFilter] = useState(viewParams.status || 'all');
   const [open, setOpen] = useState(false);
   const [payOpen, setPayOpen] = useState(null);
+  const [viewInvoiceModal, setViewInvoiceModal] = useState(null);
+  const [editInvoiceModal, setEditInvoiceModal] = useState(null);
   const [branding, setBranding] = useState({});
 
   const [page, setPage] = useState(1);
@@ -4393,12 +4474,12 @@ function InvoicesView({ user, viewParams = {}, setView }) {
       if (viewParams.openId) {
         let f = (i.invoices || []).find(x => x.id === viewParams.openId);
         if (f) {
-          if (f.status !== 'Paid') setPayOpen(f);
+          setViewInvoiceModal(f);
         } else {
           try {
             const res = await call(`invoices?id=${viewParams.openId}`);
             if (res.invoices && res.invoices[0]) {
-              if (res.invoices[0].status !== 'Paid') setPayOpen(res.invoices[0]);
+              setViewInvoiceModal(res.invoices[0]);
             }
           } catch {}
         }
@@ -4513,7 +4594,7 @@ function InvoicesView({ user, viewParams = {}, setView }) {
               {filtered.map(i => (
                 <TableRow key={i.id} className="hover:bg-slate-50">
                   <TableCell className="font-mono text-sm">
-                    <button onClick={() => setPayOpen(i)} className="text-indigo-600 hover:underline">{i.invoiceNumber}</button>
+                    <button onClick={() => setViewInvoiceModal(i)} className="text-indigo-600 font-semibold hover:underline">{i.invoiceNumber}</button>
                   </TableCell>
                   <TableCell>
                     <button onClick={() => setView && setView('clients', { openId: i.clientId })} className="font-medium text-indigo-600 hover:underline text-left">{i.clientName}</button>
@@ -4530,7 +4611,9 @@ function InvoicesView({ user, viewParams = {}, setView }) {
                     }`}>{i.status}</span>
                   </TableCell>
                   <TableCell className="text-right">
-                    <Button size="sm" variant="ghost" onClick={() => generateInvoicePDF(i, branding)} title="PDF"><FileDown className="w-4 h-4 text-indigo-600" /></Button>
+                    <Button size="sm" variant="ghost" onClick={() => setViewInvoiceModal(i)} title="View"><Eye className="w-4 h-4 text-indigo-600" /></Button>
+                    <Button size="sm" variant="ghost" onClick={() => setEditInvoiceModal(i)} title="Edit"><Edit className="w-4 h-4 text-slate-600" /></Button>
+                    <Button size="sm" variant="ghost" onClick={() => generateInvoicePDF(i, branding)} title="PDF"><FileDown className="w-4 h-4 text-slate-600" /></Button>
                     {i.status !== 'Paid' && (
                       <Button size="sm" variant="ghost" onClick={() => setPayOpen(i)} title="Record payment"><Wallet className="w-4 h-4 text-emerald-600" /></Button>
                     )}
@@ -4550,21 +4633,202 @@ function InvoicesView({ user, viewParams = {}, setView }) {
           />
         </CardContent>
       </Card>
+      {viewInvoiceModal && (
+        <InvoiceViewModal
+          invoice={viewInvoiceModal}
+          branding={branding}
+          onClose={() => setViewInvoiceModal(null)}
+          onEdit={(inv) => { setViewInvoiceModal(null); setEditInvoiceModal(inv); }}
+          onRecordPayment={(inv) => { setViewInvoiceModal(null); setPayOpen(inv); }}
+        />
+      )}
+      {editInvoiceModal && (
+        <InvoiceForm
+          invoiceToEdit={editInvoiceModal}
+          clients={clients}
+          branding={branding}
+          onClose={() => setEditInvoiceModal(null)}
+          onSaved={(inv) => { setEditInvoiceModal(null); load(); generateInvoicePDF(inv, branding); }}
+        />
+      )}
       {open && <InvoiceForm clients={clients} branding={branding} onClose={() => setOpen(false)} onSaved={(inv) => { setOpen(false); load(); generateInvoicePDF(inv, branding); }} />}
       {payOpen && <PaymentForm clientId={payOpen.clientId} client={{ name: payOpen.clientName }} invoices={[payOpen]} onClose={() => { setPayOpen(null); setView('invoices', {}); }} onSaved={() => { setPayOpen(null); setView('invoices', {}); load(); }} />}
     </div>
   );
 }
 
-function InvoiceForm({ clients = [], branding, initialClientId, onClose, onSaved }) {
+function InvoiceViewModal({ invoiceId, invoice: initialInvoice, branding, onClose, onEdit, onRecordPayment }) {
+  const { call } = useApi();
+  const [inv, setInv] = useState(initialInvoice || null);
+  const [loading, setLoading] = useState(!initialInvoice || !initialInvoice.items);
+
+  useEffect(() => {
+    async function fetchInv() {
+      const id = invoiceId || initialInvoice?.id;
+      if (!id) return;
+      try {
+        const res = await call(`invoices/${id}`);
+        if (res.invoice) setInv(res.invoice);
+      } catch (e) {
+        toast.error(e.message);
+      } finally {
+        setLoading(false);
+      }
+    }
+    fetchInv();
+  }, [invoiceId, initialInvoice]);
+
+  if (loading) {
+    return (
+      <Dialog open onOpenChange={onClose}>
+        <DialogContent className="max-w-xl w-[95vw] p-8 text-center">
+          <Loader2 className="w-8 h-8 animate-spin mx-auto text-indigo-600 mb-2" />
+          <p className="text-sm text-slate-500 font-medium">Loading invoice details...</p>
+        </DialogContent>
+      </Dialog>
+    );
+  }
+
+  if (!inv) return null;
+
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent className="max-w-3xl w-[95vw] max-h-[90vh] overflow-y-auto p-4 sm:p-6">
+        <DialogHeader className="border-b pb-3">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div className="flex items-center gap-2">
+              <DialogTitle className="text-xl font-bold font-mono text-slate-900">{inv.invoiceNumber}</DialogTitle>
+              <Badge className={`text-xs ${
+                inv.status === 'Paid' ? 'bg-emerald-100 text-emerald-800 border-emerald-300' :
+                inv.status === 'Partial' ? 'bg-amber-100 text-amber-800 border-amber-300' : 'bg-red-100 text-red-800 border-red-300'
+              }`}>
+                {inv.status || 'Unpaid'}
+              </Badge>
+            </div>
+            <div className="text-xs text-slate-500">
+              Date: <span className="font-medium text-slate-700">{inv.createdAt ? inv.createdAt.slice(0, 10) : inv.date || '-'}</span>
+              {inv.dueDate ? ` • Due: ${inv.dueDate}` : ''}
+            </div>
+          </div>
+        </DialogHeader>
+
+        <div className="space-y-4 my-2">
+          {/* Client Details */}
+          <div className="p-3.5 rounded-lg border bg-slate-50/80 grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+            <div>
+              <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Billed To</div>
+              <div className="font-semibold text-slate-900">{inv.clientName}</div>
+              {inv.companyName && <div className="text-slate-600 text-xs">{inv.companyName}</div>}
+              {inv.clientGstin && <div className="text-slate-500 text-xs mt-0.5">GSTIN: {inv.clientGstin}</div>}
+            </div>
+            {inv.clientAddress && (
+              <div>
+                <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Address</div>
+                <div className="text-slate-600 text-xs whitespace-pre-line">{inv.clientAddress}</div>
+              </div>
+            )}
+          </div>
+
+          {/* Line Items Table */}
+          <div className="border rounded-lg overflow-hidden">
+            <Table>
+              <TableHeader className="bg-slate-100">
+                <TableRow>
+                  <TableHead className="font-semibold text-xs">Item</TableHead>
+                  <TableHead className="font-semibold text-xs">Description</TableHead>
+                  <TableHead className="text-right font-semibold text-xs">Qty</TableHead>
+                  <TableHead className="text-right font-semibold text-xs">Rate</TableHead>
+                  <TableHead className="text-right font-semibold text-xs">Amount</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {(inv.items || []).map((it, idx) => (
+                  <TableRow key={idx}>
+                    <TableCell className="font-medium text-sm">{it.name || 'Service / Product'}</TableCell>
+                    <TableCell className="text-xs text-slate-500">{it.description || '-'}</TableCell>
+                    <TableCell className="text-right text-sm">{it.qty || 1}</TableCell>
+                    <TableCell className="text-right text-sm">₹{(Number(it.rate) || 0).toLocaleString('en-IN')}</TableCell>
+                    <TableCell className="text-right text-sm font-medium">₹{((Number(it.rate) || 0) * (Number(it.qty) || 1)).toLocaleString('en-IN')}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+
+          {/* Totals Summary */}
+          <div className="flex justify-end border-t pt-3">
+            <div className="w-full sm:w-64 space-y-1.5 text-sm">
+              <div className="flex justify-between text-slate-600">
+                <span>Subtotal:</span>
+                <span className="font-medium">₹{(inv.subtotal || 0).toLocaleString('en-IN')}</span>
+              </div>
+              {inv.gstApplicable && (
+                <div className="flex justify-between text-slate-600">
+                  <span>GST (18%):</span>
+                  <span className="font-medium">₹{(inv.gstAmount || 0).toLocaleString('en-IN')}</span>
+                </div>
+              )}
+              <div className="flex justify-between text-base font-bold text-slate-900 pt-1 border-t">
+                <span>Total Amount:</span>
+                <span>₹{(inv.total || 0).toLocaleString('en-IN')}</span>
+              </div>
+              <div className="flex justify-between text-emerald-600 text-xs pt-1">
+                <span>Paid Amount:</span>
+                <span className="font-semibold">₹{(inv.paidAmount || 0).toLocaleString('en-IN')}</span>
+              </div>
+              <div className="flex justify-between text-red-600 font-semibold text-sm pt-1 border-t">
+                <span>Balance Due:</span>
+                <span>₹{(inv.dueAmount ?? (inv.total - (inv.paidAmount || 0))).toLocaleString('en-IN')}</span>
+              </div>
+            </div>
+          </div>
+
+          {inv.notes && (
+            <div className="p-3 bg-amber-50/50 rounded-lg border border-amber-200 text-xs text-amber-900">
+              <span className="font-semibold">Notes: </span>{inv.notes}
+            </div>
+          )}
+        </div>
+
+        <DialogFooter className="flex flex-wrap gap-2 sm:justify-between items-center border-t pt-3">
+          <Button variant="outline" size="sm" onClick={() => generateInvoicePDF(inv, branding)}>
+            <FileDown className="w-4 h-4 mr-2 text-indigo-600" />Download PDF
+          </Button>
+
+          <div className="flex gap-2">
+            {inv.status !== 'Paid' && onRecordPayment && (
+              <Button variant="outline" size="sm" onClick={() => onRecordPayment(inv)} className="text-emerald-700 border-emerald-200 bg-emerald-50 hover:bg-emerald-100">
+                <Wallet className="w-4 h-4 mr-2 text-emerald-600" />Record Payment
+              </Button>
+            )}
+            {onEdit && (
+              <Button size="sm" onClick={() => onEdit(inv)} className="bg-indigo-600 hover:bg-indigo-700 text-white">
+                <Edit className="w-4 h-4 mr-2" />Edit Invoice
+              </Button>
+            )}
+            <Button variant="ghost" size="sm" onClick={onClose}>Close</Button>
+          </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function InvoiceForm({ clients = [], branding, initialClientId, invoiceToEdit, onClose, onSaved }) {
   const { call } = useApi();
   const [clientList, setClientList] = useState(clients || []);
   const [f, setF] = useState({
-    clientId: initialClientId || '', clientName: '', companyName: '', clientAddress: '', clientGstin: '',
-    items: [{ name: '', description: '', qty: 1, rate: 0 }],
-    gstApplicable: true,
-    dueDate: new Date(Date.now() + 15 * 86400000).toISOString().slice(0, 10),
-    notes: '',
+    id: invoiceToEdit?.id,
+    invoiceNumber: invoiceToEdit?.invoiceNumber,
+    clientId: invoiceToEdit?.clientId || initialClientId || '',
+    clientName: invoiceToEdit?.clientName || '',
+    companyName: invoiceToEdit?.companyName || '',
+    clientAddress: invoiceToEdit?.clientAddress || '',
+    clientGstin: invoiceToEdit?.clientGstin || '',
+    items: invoiceToEdit?.items && invoiceToEdit.items.length ? invoiceToEdit.items : [{ name: '', description: '', qty: 1, rate: 0 }],
+    gstApplicable: invoiceToEdit?.gstApplicable !== undefined ? invoiceToEdit.gstApplicable : true,
+    dueDate: invoiceToEdit?.dueDate || new Date(Date.now() + 15 * 86400000).toISOString().slice(0, 10),
+    notes: invoiceToEdit?.notes || '',
   });
   const [saving, setSaving] = useState(false);
 
@@ -4593,7 +4857,21 @@ function InvoiceForm({ clients = [], branding, initialClientId, onClose, onSaved
         setClientList(list);
       }
 
-      if (initialClientId) {
+      if (invoiceToEdit) {
+        setF({
+          id: invoiceToEdit.id,
+          invoiceNumber: invoiceToEdit.invoiceNumber,
+          clientId: invoiceToEdit.clientId || initialClientId || '',
+          clientName: invoiceToEdit.clientName || '',
+          companyName: invoiceToEdit.companyName || '',
+          clientAddress: invoiceToEdit.clientAddress || '',
+          clientGstin: invoiceToEdit.clientGstin || '',
+          items: invoiceToEdit.items && invoiceToEdit.items.length ? invoiceToEdit.items : [{ name: '', description: '', qty: 1, rate: 0 }],
+          gstApplicable: invoiceToEdit.gstApplicable !== undefined ? invoiceToEdit.gstApplicable : true,
+          dueDate: invoiceToEdit.dueDate || new Date(Date.now() + 15 * 86400000).toISOString().slice(0, 10),
+          notes: invoiceToEdit.notes || '',
+        });
+      } else if (initialClientId) {
         const c = list.find(x => x.id === initialClientId);
         if (c) {
           pickClientObj(c);
@@ -4606,7 +4884,7 @@ function InvoiceForm({ clients = [], branding, initialClientId, onClose, onSaved
       }
     }
     init();
-  }, [initialClientId]);
+  }, [initialClientId, invoiceToEdit]);
 
   function pickClient(id) {
     const c = clientList.find(x => x.id === id);
@@ -4626,17 +4904,27 @@ function InvoiceForm({ clients = [], branding, initialClientId, onClose, onSaved
     if (!f.clientName) { toast.error('Select or enter client'); return; }
     setSaving(true);
     try {
-      const d = await call('invoices', { method: 'POST', body: f });
-      toast.success(`Invoice ${d.invoice.invoiceNumber} created!`);
-      onSaved(d.invoice);
+      let savedInv;
+      if (f.id) {
+        const res = await call(`invoices/${f.id}`, { method: 'PUT', body: f });
+        savedInv = res.invoice || { ...f, subtotal, gstAmount, total };
+        toast.success(`Invoice ${f.invoiceNumber || ''} updated!`);
+      } else {
+        const d = await call('invoices', { method: 'POST', body: f });
+        savedInv = d.invoice;
+        toast.success(`Invoice ${savedInv.invoiceNumber} created!`);
+      }
+      onSaved(savedInv);
     } catch (e) { toast.error(e.message); } finally { setSaving(false); }
   }
   return (
     <Dialog open onOpenChange={onClose}>
       <DialogContent className="max-w-4xl w-[95vw] max-h-[90vh] overflow-y-auto p-4 sm:p-6">
         <DialogHeader>
-          <DialogTitle>New Invoice</DialogTitle>
-          <DialogDescription>Auto-numbered. PDF generates instantly on save with your branding.</DialogDescription>
+          <DialogTitle>{f.id ? `Edit Invoice (${f.invoiceNumber || 'Draft'})` : 'New Invoice'}</DialogTitle>
+          <DialogDescription>
+            {f.id ? 'Update client details, line items, or due date. Ledger entries update automatically.' : 'Auto-numbered. PDF generates instantly on save with your branding.'}
+          </DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="space-y-4">
           <div className="rounded-lg border p-4 bg-slate-50">

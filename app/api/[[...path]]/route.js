@@ -2553,9 +2553,40 @@ async function handle(request, ctx) {
       const existingInvoice = await db.collection('invoices').findOne({ id, orgId: me.activeOrgId });
       if (!existingInvoice) return json({ error: 'Not found' }, 404);
       const body = await request.json();
-      await db.collection('invoices').updateOne({ id, orgId: me.activeOrgId }, { $set: body });
+
+      const items = body.items !== undefined ? body.items : existingInvoice.items;
+      const gstApplicable = body.gstApplicable !== undefined ? !!body.gstApplicable : existingInvoice.gstApplicable;
+      const subtotal = items.reduce((s, it) => s + (Number(it.rate) || 0) * (Number(it.qty) || 1), 0);
+      const gstAmount = gstApplicable ? +(subtotal * 0.18).toFixed(2) : 0;
+      const total = +(subtotal + gstAmount).toFixed(2);
+
+      const pays = await db.collection('payments').find({ invoiceId: id, orgId: me.activeOrgId }).toArray();
+      const paidAmount = pays.reduce((s, p) => s + (p.amount || 0), 0);
+      let status = existingInvoice.status || 'Unpaid';
+      if (paidAmount >= total && total > 0) status = 'Paid';
+      else if (paidAmount > 0) status = 'Partial';
+      else status = 'Unpaid';
+
+      const updateData = {
+        ...body,
+        subtotal,
+        gstAmount,
+        total,
+        status,
+        updatedAt: new Date().toISOString(),
+        updatedBy: me.id,
+      };
+      delete updateData._id;
+      delete updateData.id;
+      delete updateData.orgId;
+      delete updateData.invoiceNumber;
+      delete updateData.createdAt;
+      delete updateData.createdBy;
+
+      await db.collection('invoices').updateOne({ id, orgId: me.activeOrgId }, { $set: updateData });
       logActivity(db, me, 'update', 'invoice', id);
-      return json({ ok: true });
+      const updated = await db.collection('invoices').findOne({ id, orgId: me.activeOrgId }, { projection: { _id: 0 } });
+      return json({ ok: true, invoice: updated });
     }
     if (route.startsWith('invoices/') && method === 'DELETE') {
       if (me.role !== 'admin') return json({ error: 'Forbidden' }, 403);
