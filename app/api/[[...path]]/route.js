@@ -2016,6 +2016,187 @@ async function handle(request, ctx) {
       return json({ ok: true });
     }
 
+    // -------- APPOINTMENTS --------
+    if (route === 'appointments' && method === 'GET') {
+      const filter = { orgId: me.activeOrgId };
+      const andClauses = [];
+
+      const id = url.searchParams.get('id');
+      if (id) {
+        filter.id = id;
+      } else {
+        const viewMode = url.searchParams.get('viewMode'); // 'my' or 'all'
+        if (viewMode === 'my' || (me.role === 'staff' && viewMode !== 'all')) {
+          andClauses.push({
+            $or: [
+              { createdBy: me.id },
+              { assignedUserIds: me.id }
+            ]
+          });
+        }
+
+        const date = url.searchParams.get('date');
+        const clientId = url.searchParams.get('clientId');
+        const assignedUserId = url.searchParams.get('assignedUserId');
+        const type = url.searchParams.get('type');
+        const status = url.searchParams.get('status');
+        const q = url.searchParams.get('q');
+
+        if (date) {
+          andClauses.push({ date });
+        }
+        if (clientId) {
+          andClauses.push({ clientId });
+        }
+        if (assignedUserId) {
+          andClauses.push({ assignedUserIds: assignedUserId });
+        }
+        if (type) {
+          andClauses.push({ type });
+        }
+        if (status) {
+          andClauses.push({ status });
+        }
+        if (q && q.trim()) {
+          const rx = new RegExp(q.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+          andClauses.push({
+            $or: [
+              { title: rx },
+              { notes: rx },
+              { clientName: rx },
+              { locationAddress: rx },
+              { assignedUserNames: rx }
+            ]
+          });
+        }
+      }
+
+      if (andClauses.length > 0) {
+        filter.$and = andClauses;
+      }
+
+      const { page, limit } = getPaginationParams(url.searchParams);
+      const total = await db.collection('appointments').countDocuments(filter);
+      const data = await db.collection('appointments')
+        .find(filter)
+        .project({ _id: 0 })
+        .sort({ date: -1, startTime: 1, createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .toArray();
+
+      return json({
+        appointments: data,
+        data,
+        page,
+        limit,
+        total,
+        hasMore: total > page * limit
+      });
+    }
+
+    if (route === 'appointments' && method === 'POST') {
+      const body = await request.json();
+      if (!body.title) return json({ error: 'Appointment title is required' }, 400);
+      if (!body.date) return json({ error: 'Appointment date is required' }, 400);
+
+      // Handle assignees array (can be multiple users assigned by admin or staff)
+      let assignedUserIds = [];
+      if (Array.isArray(body.assignedUserIds) && body.assignedUserIds.length) {
+        assignedUserIds = body.assignedUserIds.filter(Boolean);
+      } else if (body.assignedUserId) {
+        assignedUserIds = [body.assignedUserId];
+      } else {
+        assignedUserIds = [me.id];
+      }
+
+      // Fetch user names for assignedUserIds
+      const assignedUsers = await db.collection('users')
+        .find({ id: { $in: assignedUserIds } })
+        .project({ id: 1, name: 1 })
+        .toArray();
+      const assignedUserNames = assignedUsers.map(u => u.name);
+
+      const appointment = {
+        id: uuidv4(),
+        orgId: me.activeOrgId,
+        title: body.title.trim(),
+        type: body.type || 'in_office', // 'in_office' | 'client_visit'
+        clientId: body.clientId || '',
+        clientName: body.clientName || '',
+        locationAddress: body.locationAddress || '',
+        date: body.date,
+        startTime: body.startTime || '10:00',
+        endTime: body.endTime || '11:00',
+        status: body.status || 'Scheduled', // 'Scheduled' | 'Completed' | 'Cancelled' | 'Rescheduled'
+        assignedUserIds,
+        assignedUserNames,
+        notes: body.notes || '',
+        createdBy: me.id,
+        createdByName: me.name,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      await db.collection('appointments').insertOne(appointment);
+      logActivity(db, me, 'create', 'appointment', appointment.id, { title: appointment.title });
+
+      const { _id, ...safe } = appointment;
+      return json({ appointment: safe, ok: true });
+    }
+
+    if (route.startsWith('appointments/') && method === 'PUT') {
+      const id = route.split('/')[1];
+      const existing = await db.collection('appointments').findOne({ id, orgId: me.activeOrgId });
+      if (!existing) return json({ error: 'Appointment not found' }, 404);
+
+      const body = await request.json();
+
+      let assignedUserIds = existing.assignedUserIds || [];
+      if (Array.isArray(body.assignedUserIds)) {
+        assignedUserIds = body.assignedUserIds.filter(Boolean);
+      } else if (body.assignedUserId) {
+        assignedUserIds = [body.assignedUserId];
+      }
+
+      const assignedUsers = await db.collection('users')
+        .find({ id: { $in: assignedUserIds } })
+        .project({ id: 1, name: 1 })
+        .toArray();
+      const assignedUserNames = assignedUsers.map(u => u.name);
+
+      const updateData = {
+        ...body,
+        assignedUserIds,
+        assignedUserNames,
+        updatedAt: new Date().toISOString(),
+      };
+      delete updateData._id;
+      delete updateData.id;
+      delete updateData.orgId;
+      delete updateData.createdBy;
+      delete updateData.createdAt;
+
+      await db.collection('appointments').updateOne({ id, orgId: me.activeOrgId }, { $set: updateData });
+      logActivity(db, me, 'update', 'appointment', id);
+
+      const updated = await db.collection('appointments').findOne({ id, orgId: me.activeOrgId }, { projection: { _id: 0 } });
+      return json({ ok: true, appointment: updated });
+    }
+
+    if (route.startsWith('appointments/') && method === 'DELETE') {
+      const id = route.split('/')[1];
+      const existing = await db.collection('appointments').findOne({ id, orgId: me.activeOrgId });
+      if (!existing) return json({ error: 'Appointment not found' }, 404);
+
+      const canDelete = me.role === 'admin' || me.role === 'owner' || existing.createdBy === me.id;
+      if (!canDelete) return json({ error: 'Forbidden' }, 403);
+
+      await db.collection('appointments').deleteOne({ id, orgId: me.activeOrgId });
+      logActivity(db, me, 'delete', 'appointment', id);
+      return json({ ok: true });
+    }
+
     // -------- QUOTATIONS --------
     if (route === 'quotations' && method === 'GET') {
       const filter = me.role === 'staff' ? { orgId: me.activeOrgId, createdBy: me.id } : { orgId: me.activeOrgId };
@@ -2805,7 +2986,13 @@ async function handle(request, ctx) {
       const tasks = await db.collection('tasks').find({ ...filter, dueDate: { $ne: '', $gte: from || '', $lte: to || '9999' } }).project({ _id: 0 }).toArray();
       const leadFilter = me.role === 'staff' ? { orgId: me.activeOrgId, assignedTo: me.id } : { orgId: me.activeOrgId };
       const leads = await db.collection('leads').find({ ...leadFilter, followUpDate: { $ne: '', $gte: from || '', $lte: to || '9999' } }).project({ _id: 0 }).toArray();
-      return json({ tasks, leads });
+      
+      const apptFilter = me.role === 'staff' 
+        ? { orgId: me.activeOrgId, $or: [{ createdBy: me.id }, { assignedUserIds: me.id }] } 
+        : { orgId: me.activeOrgId };
+      const appointments = await db.collection('appointments').find({ ...apptFilter, date: { $ne: '', $gte: from || '', $lte: to || '9999' } }).project({ _id: 0 }).toArray();
+
+      return json({ tasks, leads, appointments });
     }
 
     if (route === 'reminders' && method === 'GET') {
@@ -2818,7 +3005,13 @@ async function handle(request, ctx) {
       const followUpsToday = await db.collection('leads').find({ ...filterStaff, status: { $nin: ['Converted', 'Cancelled'] }, followUpDate: today }).project({ _id: 0 }).toArray();
       const followUpsUpcoming = await db.collection('leads').find({ ...filterStaff, status: { $nin: ['Converted', 'Cancelled'] }, followUpDate: { $gt: today, $lte: in7 } }).project({ _id: 0 }).sort({ followUpDate: 1 }).toArray();
       const followUpsOverdue = await db.collection('leads').find({ ...filterStaff, status: { $nin: ['Converted', 'Cancelled'] }, followUpDate: { $ne: '', $lt: today } }).project({ _id: 0 }).sort({ followUpDate: 1 }).toArray();
-      return json({ dueToday, upcoming, overdue, followUpsToday, followUpsUpcoming, followUpsOverdue });
+      
+      const apptFilterStaff = me.role === 'staff' 
+        ? { orgId: me.activeOrgId, $or: [{ createdBy: me.id }, { assignedUserIds: me.id }] } 
+        : { orgId: me.activeOrgId };
+      const appointmentsToday = await db.collection('appointments').find({ ...apptFilterStaff, status: 'Scheduled', date: today }).project({ _id: 0 }).sort({ startTime: 1 }).toArray();
+
+      return json({ dueToday, upcoming, overdue, followUpsToday, followUpsUpcoming, followUpsOverdue, appointmentsToday });
     }
 
     // -------- RECEIVABLES AGING REPORT --------

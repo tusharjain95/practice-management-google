@@ -10,7 +10,7 @@ import {
   IndianRupee, Building2, ChevronLeft, RotateCcw, Upload, KeyRound,
   BarChart3, ClipboardCheck, ShieldCheck, Database, DownloadCloud, UploadCloud,
   MessageSquare, Menu, X, ArrowUpDown, ArrowUp, ArrowDown, Send, Loader2,
-  Sun, Moon, FilePlus, PlusCircle, MinusCircle, Eye,
+  Sun, Moon, FilePlus, PlusCircle, MinusCircle, Eye, MapPin, UserCheck, CalendarCheck, CheckSquare, Share2,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -571,6 +571,7 @@ function Shell({ user, onUserUpdated, view, viewParams, setView, onLogout, theme
     const all = [
       { key: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, perm: 'dashboard' },
       { key: 'calendar', label: 'Calendar', icon: Calendar, perm: 'calendar' },
+      { key: 'appointments', label: 'Appointments', icon: CalendarCheck, perm: 'appointments' },
       { key: 'leads', label: 'Leads', icon: Target, perm: 'leads' },
       { key: 'tasks', label: 'Tasks', icon: ListChecks, perm: 'tasks' },
     ];
@@ -724,6 +725,7 @@ function Shell({ user, onUserUpdated, view, viewParams, setView, onLogout, theme
         <div className="p-3 sm:p-4 md:p-6 max-w-[1400px] mx-auto">
           {view === 'dashboard' && <Dashboard user={user} setView={setView} onOpenProfile={() => setProfileOpen(true)} />}
           {view === 'calendar' && <CalendarView user={user} setView={setView} />}
+          {view === 'appointments' && <AppointmentsView user={user} viewParams={viewParams} setView={setView} />}
           {view === 'leads' && <Leads user={user} viewParams={viewParams} setView={setView} />}
           {view === 'tasks' && <Tasks user={user} viewParams={viewParams} setView={setView} />}
           {view === 'clients' && <ClientsView user={user} setView={setView} viewParams={viewParams} />}
@@ -3566,7 +3568,7 @@ function UserForm({ user, initial, onClose, onSaved }) {
 function CalendarView({ user, setView }) {
   const { call } = useApi();
   const [month, setMonth] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
-  const [data, setData] = useState({ tasks: [], leads: [] });
+  const [data, setData] = useState({ tasks: [], leads: [], appointments: [] });
 
   async function load() {
     const from = pad(month.getFullYear(), month.getMonth() + 1, 1);
@@ -3592,7 +3594,8 @@ function CalendarView({ user, setView }) {
     const ds = dateStr(d);
     const t = data.tasks.filter(t => (t.dueDate || '').slice(0, 10) === ds);
     const l = data.leads.filter(l => (l.followUpDate || '').slice(0, 10) === ds);
-    return { tasks: t, leads: l };
+    const a = (data.appointments || []).filter(a => (a.date || '').slice(0, 10) === ds);
+    return { tasks: t, leads: l, appointments: a };
   }
 
   function statusStyle(t) {
@@ -3648,13 +3651,18 @@ function CalendarView({ user, setView }) {
                         {t.status === 'Completed' ? '✓' : t.status === 'In Progress' ? '◐' : (t.dueDate && t.dueDate.slice(0,10) < todayStr ? '⚠' : '◯')} {t.title}
                       </button>
                     ))}
+                    {ev.appointments.slice(0, 2).map(a => (
+                      <button key={a.id} onClick={() => setView('appointments', { openId: a.id })} className={`w-full text-left text-[10px] px-1 py-0.5 rounded truncate border ${a.type === 'client_visit' ? 'bg-amber-100 text-amber-800 border-amber-200 hover:bg-amber-200' : 'bg-indigo-100 text-indigo-800 border-indigo-200 hover:bg-indigo-200'}`} title={`Appointment: ${a.title}`}>
+                        {a.type === 'client_visit' ? '🚗' : '🏢'} {a.title}
+                      </button>
+                    ))}
                     {ev.leads.slice(0, 2).map(l => (
                       <button key={l.id} onClick={() => setView('leads', { openId: l.id })} className="w-full text-left text-[10px] px-1 py-0.5 rounded bg-indigo-100 text-indigo-700 truncate hover:bg-indigo-200 border border-indigo-200" title={l.name}>
                         📞 {l.name}
                       </button>
                     ))}
-                    {(ev.tasks.length + ev.leads.length > 5) && (
-                      <div className="text-[10px] text-slate-500">+{ev.tasks.length + ev.leads.length - 5} more</div>
+                    {(ev.tasks.length + ev.leads.length + ev.appointments.length > 5) && (
+                      <div className="text-[10px] text-slate-500">+{ev.tasks.length + ev.leads.length + ev.appointments.length - 5} more</div>
                     )}
                   </div>
                 </div>
@@ -5378,6 +5386,7 @@ function AgingBarChart({ clients, buckets }) {
 const ALL_PERMS = [
   { key: 'dashboard', label: 'Dashboard' },
   { key: 'calendar', label: 'Calendar' },
+  { key: 'appointments', label: 'Appointments' },
   { key: 'leads', label: 'Leads' },
   { key: 'tasks', label: 'Tasks' },
   { key: 'clients', label: 'Clients' },
@@ -6783,6 +6792,746 @@ function OrganisationsAdminView({ user }) {
         </Dialog>
       )}
     </div>
+  );
+}
+
+
+// =================== APPOINTMENTS ===================
+function AppointmentsView({ user, viewParams = {}, setView }) {
+  const { call } = useApi();
+  const [appointments, setAppointments] = useState([]);
+  const [clients, setClients] = useState([]);
+  const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [q, setQ] = useState('');
+  const [debouncedQ, setDebouncedQ] = useState('');
+
+  const [viewMode, setViewMode] = useState(user.role === 'admin' ? 'all' : 'my');
+  const [typeFilter, setTypeFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [dateFilter, setDateFilter] = useState('all');
+
+  const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(null);
+
+  useEffect(() => {
+    const handler = setTimeout(() => { setDebouncedQ(q); }, 300);
+    return () => clearTimeout(handler);
+  }, [q]);
+
+  async function loadUsersAndClients() {
+    try {
+      const [uRes, cRes] = await Promise.all([
+        call('users'),
+        call('clients')
+      ]);
+      if (uRes.users) setUsers(uRes.users);
+      if (cRes.clients) setClients(cRes.clients);
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  async function load() {
+    setLoading(true);
+    try {
+      let query = `appointments?limit=100&viewMode=${viewMode}`;
+      if (debouncedQ) query += `&q=${encodeURIComponent(debouncedQ)}`;
+      if (typeFilter !== 'all') query += `&type=${typeFilter}`;
+      if (statusFilter !== 'all') query += `&status=${statusFilter}`;
+
+      const todayStr = new Date().toISOString().slice(0, 10);
+      if (dateFilter === 'today') {
+        query += `&date=${todayStr}`;
+      }
+
+      const res = await call(query);
+      let list = res.appointments || res.data || [];
+
+      if (dateFilter === 'upcoming') {
+        list = list.filter(a => a.date >= todayStr && a.status === 'Scheduled');
+      } else if (dateFilter === 'this_month') {
+        const currentMonthPrefix = todayStr.slice(0, 7);
+        list = list.filter(a => (a.date || '').startsWith(currentMonthPrefix));
+      }
+
+      setAppointments(list);
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadUsersAndClients();
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [debouncedQ, viewMode, typeFilter, statusFilter, dateFilter]);
+
+  async function handleMarkCompleted(id) {
+    try {
+      await call(`appointments/${id}`, {
+        method: 'PUT',
+        body: { status: 'Completed' }
+      });
+      toast.success('Appointment marked as completed');
+      load();
+    } catch (e) {
+      toast.error(e.message);
+    }
+  }
+
+  async function handleDelete(id) {
+    if (!confirm('Are you sure you want to delete this appointment?')) return;
+    try {
+      await call(`appointments/${id}`, { method: 'DELETE' });
+      toast.success('Appointment deleted');
+      load();
+    } catch (e) {
+      toast.error(e.message);
+    }
+  }
+
+  function openGoogleCalendar(a) {
+    const title = encodeURIComponent(a.title || 'Appointment');
+    const details = encodeURIComponent(`${a.notes || ''}\nClient: ${a.clientName || 'N/A'}\nAssigned Staff: ${(a.assignedUserNames || []).join(', ')}`);
+    const location = encodeURIComponent(a.locationAddress || (a.type === 'in_office' ? 'Office' : 'Client Site'));
+
+    const dStr = (a.date || new Date().toISOString().slice(0,10)).replace(/-/g, '');
+    const sTime = (a.startTime || '10:00').replace(':', '') + '00';
+    const eTime = (a.endTime || '11:00').replace(':', '') + '00';
+
+    const dates = `${dStr}T${sTime}/${dStr}T${eTime}`;
+    const url = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${dates}&details=${details}&location=${location}`;
+    window.open(url, '_blank');
+  }
+
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const totalCount = appointments.length;
+  const inOfficeCount = appointments.filter(a => a.type === 'in_office').length;
+  const clientVisitCount = appointments.filter(a => a.type === 'client_visit').length;
+  const todayCount = appointments.filter(a => a.date === todayStr).length;
+
+  return (
+    <div className="space-y-6">
+      <PageHeader
+        title="Appointments & Visits"
+        subtitle="Schedule and manage in-office meetings and client site visits across team members"
+        action={
+          <Button onClick={() => { setEditing(null); setOpen(true); }} className="bg-indigo-600 hover:bg-indigo-700 text-white gap-2 shadow-sm">
+            <Plus className="w-4 h-4" /> Schedule Appointment
+          </Button>
+        }
+      />
+
+      {/* Quick Summary Cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <Card className="p-4 flex items-center gap-3 bg-gradient-to-br from-indigo-50/50 to-white border-indigo-100">
+          <div className="p-2.5 rounded-lg bg-indigo-100 text-indigo-700">
+            <CalendarCheck className="w-5 h-5" />
+          </div>
+          <div>
+            <div className="text-2xl font-bold text-slate-900">{totalCount}</div>
+            <div className="text-xs font-medium text-slate-500">Total Listed</div>
+          </div>
+        </Card>
+
+        <Card className="p-4 flex items-center gap-3 bg-gradient-to-br from-blue-50/50 to-white border-blue-100">
+          <div className="p-2.5 rounded-lg bg-blue-100 text-blue-700">
+            <Building2 className="w-5 h-5" />
+          </div>
+          <div>
+            <div className="text-2xl font-bold text-blue-900">{inOfficeCount}</div>
+            <div className="text-xs font-medium text-slate-500">In-Office Meetings</div>
+          </div>
+        </Card>
+
+        <Card className="p-4 flex items-center gap-3 bg-gradient-to-br from-amber-50/50 to-white border-amber-100">
+          <div className="p-2.5 rounded-lg bg-amber-100 text-amber-700">
+            <MapPin className="w-5 h-5" />
+          </div>
+          <div>
+            <div className="text-2xl font-bold text-amber-900">{clientVisitCount}</div>
+            <div className="text-xs font-medium text-slate-500">Client Visits</div>
+          </div>
+        </Card>
+
+        <Card className="p-4 flex items-center gap-3 bg-gradient-to-br from-emerald-50/50 to-white border-emerald-100">
+          <div className="p-2.5 rounded-lg bg-emerald-100 text-emerald-700">
+            <Clock className="w-5 h-5" />
+          </div>
+          <div>
+            <div className="text-2xl font-bold text-emerald-900">{todayCount}</div>
+            <div className="text-xs font-medium text-slate-500">Scheduled Today</div>
+          </div>
+        </Card>
+      </div>
+
+      {/* Filter and Control Bar */}
+      <Card className="p-4 space-y-3 bg-slate-50/50">
+        <div className="flex flex-col md:flex-row gap-3 items-stretch md:items-center justify-between">
+          <div className="relative flex-1">
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <Input
+              placeholder="Search title, client, staff, location..."
+              value={q}
+              onChange={e => setQ(e.target.value)}
+              className="pl-9 bg-white"
+            />
+            {q && (
+              <button onClick={() => setQ('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {/* View Mode Toggle */}
+            <div className="bg-slate-200 p-0.5 rounded-lg flex items-center text-xs font-medium">
+              <button
+                type="button"
+                onClick={() => setViewMode('my')}
+                className={`px-3 py-1.5 rounded-md transition ${viewMode === 'my' ? 'bg-white text-indigo-700 shadow-sm font-semibold' : 'text-slate-600 hover:text-slate-900'}`}
+              >
+                My Appointments
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('all')}
+                className={`px-3 py-1.5 rounded-md transition ${viewMode === 'all' ? 'bg-white text-indigo-700 shadow-sm font-semibold' : 'text-slate-600 hover:text-slate-900'}`}
+              >
+                All Team ({users.length || 'Team'})
+              </button>
+            </div>
+
+            {/* Type Filter */}
+            <Select value={typeFilter} onValueChange={setTypeFilter}>
+              <SelectTrigger className="w-[140px] bg-white h-9 text-xs">
+                <SelectValue placeholder="All Types" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Types</SelectItem>
+                <SelectItem value="in_office">🏢 In-Office</SelectItem>
+                <SelectItem value="client_visit">🚗 Client Visit</SelectItem>
+              </SelectContent>
+            </Select>
+
+            {/* Status Filter */}
+            <Select value={statusFilter} onValueChange={setStatusFilter}>
+              <SelectTrigger className="w-[140px] bg-white h-9 text-xs">
+                <SelectValue placeholder="All Statuses" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Statuses</SelectItem>
+                <SelectItem value="Scheduled">Scheduled</SelectItem>
+                <SelectItem value="Completed">Completed</SelectItem>
+                <SelectItem value="Rescheduled">Rescheduled</SelectItem>
+                <SelectItem value="Cancelled">Cancelled</SelectItem>
+              </SelectContent>
+            </Select>
+
+            {/* Date Filter */}
+            <Select value={dateFilter} onValueChange={setDateFilter}>
+              <SelectTrigger className="w-[140px] bg-white h-9 text-xs">
+                <SelectValue placeholder="All Dates" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Dates</SelectItem>
+                <SelectItem value="today">Today</SelectItem>
+                <SelectItem value="upcoming">Upcoming</SelectItem>
+                <SelectItem value="this_month">This Month</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+      </Card>
+
+      {/* Appointments List Grid */}
+      {loading ? (
+        <div className="py-12 text-center text-slate-500 flex flex-col items-center gap-2">
+          <Loader2 className="w-8 h-8 animate-spin text-indigo-600" />
+          <span className="text-sm">Loading appointments...</span>
+        </div>
+      ) : appointments.length === 0 ? (
+        <Card className="p-12 text-center border-dashed">
+          <CalendarCheck className="w-12 h-12 text-slate-300 mx-auto mb-3" />
+          <h3 className="text-base font-semibold text-slate-800 mb-1">No appointments found</h3>
+          <p className="text-xs text-slate-500 max-w-sm mx-auto mb-4">
+            {q || typeFilter !== 'all' || statusFilter !== 'all' || dateFilter !== 'all'
+              ? 'Try adjusting your search query or filters.'
+              : 'Schedule your first in-office meeting or client site visit.'}
+          </p>
+          <Button size="sm" onClick={() => { setEditing(null); setOpen(true); }} className="bg-indigo-600 text-white">
+            <Plus className="w-4 h-4 mr-1.5" /> Schedule Appointment
+          </Button>
+        </Card>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {appointments.map(a => {
+            const isToday = a.date === todayStr;
+            const isCompleted = a.status === 'Completed';
+            const isCancelled = a.status === 'Cancelled';
+
+            return (
+              <Card key={a.id} className={`flex flex-col justify-between hover:shadow-md transition-all border ${
+                isToday ? 'border-indigo-300 bg-indigo-50/20' : 'border-slate-200 bg-white'
+              }`}>
+                <div className="p-4 space-y-3">
+                  {/* Card Header Badges */}
+                  <div className="flex items-start justify-between gap-2">
+                    <Badge variant="outline" className={
+                      a.type === 'client_visit'
+                        ? 'bg-amber-50 text-amber-800 border-amber-200 font-medium text-[11px] gap-1'
+                        : 'bg-indigo-50 text-indigo-800 border-indigo-200 font-medium text-[11px] gap-1'
+                    }>
+                      {a.type === 'client_visit' ? <MapPin className="w-3 h-3 text-amber-600" /> : <Building2 className="w-3 h-3 text-indigo-600" />}
+                      {a.type === 'client_visit' ? 'Client Visit' : 'In-Office'}
+                    </Badge>
+
+                    <Badge className={`text-[11px] font-semibold ${
+                      isCompleted ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' :
+                      isCancelled ? 'bg-red-100 text-red-800 border border-red-300' :
+                      a.status === 'Rescheduled' ? 'bg-purple-100 text-purple-800 border border-purple-300' :
+                      'bg-blue-100 text-blue-800 border border-blue-300'
+                    }`}>
+                      {a.status || 'Scheduled'}
+                    </Badge>
+                  </div>
+
+                  {/* Title */}
+                  <div>
+                    <h4 className="font-bold text-slate-900 text-base leading-snug">{a.title}</h4>
+                    {a.clientName && (
+                      <div className="text-xs font-semibold text-indigo-600 flex items-center gap-1 mt-1">
+                        <Building2 className="w-3.5 h-3.5" />
+                        <span>Client: {a.clientName}</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Date, Time & Location */}
+                  <div className="space-y-1.5 text-xs text-slate-600 bg-slate-50 p-2.5 rounded-lg border border-slate-100">
+                    <div className="flex items-center gap-2 font-medium text-slate-800">
+                      <Calendar className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                      <span>{a.date ? new Date(a.date + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }) : '-'}</span>
+                      {isToday && <Badge className="bg-indigo-600 text-white text-[9px] px-1.5 py-0">Today</Badge>}
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <Clock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                      <span>{a.startTime || '10:00'} - {a.endTime || '11:00'}</span>
+                    </div>
+
+                    {a.locationAddress && (
+                      <div className="flex items-start gap-2 text-slate-600">
+                        <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0 mt-0.5" />
+                        <span className="line-clamp-2">{a.locationAddress}</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Assignees */}
+                  <div className="pt-1">
+                    <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1 flex items-center gap-1">
+                      <UserCheck className="w-3 h-3 text-indigo-500" /> Assigned Staff:
+                    </div>
+                    <div className="flex flex-wrap gap-1">
+                      {(a.assignedUserNames && a.assignedUserNames.length ? a.assignedUserNames : [a.createdByName || 'Self']).map((name, idx) => (
+                        <Badge key={idx} variant="secondary" className="bg-slate-100 text-slate-700 text-[10px] font-medium border border-slate-200">
+                          {name}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+
+                  {a.notes && (
+                    <div className="text-xs text-slate-500 bg-amber-50/50 p-2 rounded border border-amber-100/60 line-clamp-2">
+                      <span className="font-semibold text-amber-900">Notes: </span>{a.notes}
+                    </div>
+                  )}
+                </div>
+
+                {/* Card Footer Actions */}
+                <div className="p-3 bg-slate-50 border-t flex items-center justify-between gap-1 text-xs">
+                  <div className="flex items-center gap-1">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 px-2 text-xs text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50"
+                      onClick={() => openGoogleCalendar(a)}
+                      title="Add to Google Calendar"
+                    >
+                      <Share2 className="w-3.5 h-3.5 mr-1" /> Calendar
+                    </Button>
+                  </div>
+
+                  <div className="flex items-center gap-1">
+                    {!isCompleted && !isCancelled && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 px-2 text-xs text-emerald-700 border-emerald-200 bg-emerald-50 hover:bg-emerald-100"
+                        onClick={() => handleMarkCompleted(a.id)}
+                        title="Mark Completed"
+                      >
+                        <CheckSquare className="w-3.5 h-3.5 mr-1 text-emerald-600" /> Done
+                      </Button>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 w-7 p-0 text-slate-600 hover:text-slate-900 hover:bg-slate-200"
+                      onClick={() => { setEditing(a); setOpen(true); }}
+                      title="Edit Appointment"
+                    >
+                      <Edit className="w-3.5 h-3.5" />
+                    </Button>
+                    {(user.role === 'admin' || a.createdBy === user.id) && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 w-7 p-0 text-slate-400 hover:text-red-600 hover:bg-red-50"
+                        onClick={() => handleDelete(a.id)}
+                        title="Delete Appointment"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Appointment Form Modal */}
+      {open && (
+        <AppointmentFormDialog
+          appointmentToEdit={editing}
+          clients={clients}
+          users={users}
+          currentUser={user}
+          onClose={() => { setOpen(false); setEditing(null); }}
+          onSaved={() => { setOpen(false); setEditing(null); load(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function AppointmentFormDialog({ appointmentToEdit, clients = [], users = [], currentUser, onClose, onSaved }) {
+  const { call } = useApi();
+  const [f, setF] = useState({
+    id: appointmentToEdit?.id,
+    title: appointmentToEdit?.title || '',
+    type: appointmentToEdit?.type || 'in_office',
+    clientId: appointmentToEdit?.clientId || '',
+    clientName: appointmentToEdit?.clientName || '',
+    locationAddress: appointmentToEdit?.locationAddress || '',
+    date: appointmentToEdit?.date || new Date().toISOString().slice(0, 10),
+    startTime: appointmentToEdit?.startTime || '10:00',
+    endTime: appointmentToEdit?.endTime || '11:00',
+    status: appointmentToEdit?.status || 'Scheduled',
+    assignedUserIds: appointmentToEdit?.assignedUserIds && appointmentToEdit.assignedUserIds.length ? appointmentToEdit.assignedUserIds : [currentUser.id],
+    notes: appointmentToEdit?.notes || ''
+  });
+  const [saving, setSaving] = useState(false);
+
+  function handleClientSelect(clientId) {
+    if (!clientId) {
+      setF(prev => ({ ...prev, clientId: '', clientName: '' }));
+      return;
+    }
+    const c = clients.find(x => x.id === clientId);
+    if (c) {
+      setF(prev => ({
+        ...prev,
+        clientId: c.id,
+        clientName: c.name,
+        locationAddress: prev.type === 'client_visit' ? (c.address || c.company || prev.locationAddress) : prev.locationAddress
+      }));
+    }
+  }
+
+  function handleTypeChange(type) {
+    setF(prev => {
+      let loc = prev.locationAddress;
+      if (type === 'in_office' && (!loc || (prev.clientId && loc === clients.find(c => c.id === prev.clientId)?.address))) {
+        loc = 'Main Office — Meeting Room';
+      } else if (type === 'client_visit' && prev.clientId) {
+        const c = clients.find(x => x.id === prev.clientId);
+        if (c && c.address) loc = c.address;
+      }
+      return { ...prev, type, locationAddress: loc };
+    });
+  }
+
+  function toggleUserAssign(userId) {
+    setF(prev => {
+      const current = prev.assignedUserIds || [];
+      if (current.includes(userId)) {
+        if (current.length === 1) {
+          toast.error('Appointment must have at least one assigned user');
+          return prev;
+        }
+        return { ...prev, assignedUserIds: current.filter(id => id !== userId) };
+      } else {
+        return { ...prev, assignedUserIds: [...current, userId] };
+      }
+    });
+  }
+
+  function selectAllUsers() {
+    setF(prev => ({ ...prev, assignedUserIds: users.map(u => u.id) }));
+  }
+
+  function selectSelfOnly() {
+    setF(prev => ({ ...prev, assignedUserIds: [currentUser.id] }));
+  }
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!f.title.trim()) { toast.error('Title is required'); return; }
+    if (!f.date) { toast.error('Date is required'); return; }
+    if (!f.assignedUserIds || !f.assignedUserIds.length) { toast.error('Select at least one assigned user'); return; }
+
+    setSaving(true);
+    try {
+      if (f.id) {
+        await call(`appointments/${f.id}`, { method: 'PUT', body: f });
+        toast.success('Appointment updated');
+      } else {
+        await call('appointments', { method: 'POST', body: f });
+        toast.success('Appointment scheduled');
+      }
+      onSaved();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent className="max-w-2xl w-[95vw] max-h-[90vh] overflow-y-auto p-4 sm:p-6">
+        <DialogHeader>
+          <DialogTitle>{f.id ? 'Edit Appointment' : 'Schedule New Appointment'}</DialogTitle>
+          <DialogDescription>
+            Record in-office client meetings or team site visits. Assign one or multiple staff members.
+          </DialogDescription>
+        </DialogHeader>
+
+        <form onSubmit={submit} className="space-y-4 py-2">
+          {/* Appointment Type Toggle */}
+          <div className="space-y-1.5">
+            <Label className="text-xs font-semibold text-slate-700">Appointment Type</Label>
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => handleTypeChange('in_office')}
+                className={`p-3 rounded-lg border text-left flex items-center gap-3 transition ${
+                  f.type === 'in_office'
+                    ? 'border-indigo-600 bg-indigo-50/80 text-indigo-950 ring-2 ring-indigo-500/20 font-semibold'
+                    : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-700'
+                }`}
+              >
+                <div className={`p-2 rounded-md ${f.type === 'in_office' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-500'}`}>
+                  <Building2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="text-sm">In-Office Meeting</div>
+                  <div className="text-xs text-slate-500 font-normal">Meeting at office / branch</div>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleTypeChange('client_visit')}
+                className={`p-3 rounded-lg border text-left flex items-center gap-3 transition ${
+                  f.type === 'client_visit'
+                    ? 'border-amber-600 bg-amber-50/80 text-amber-950 ring-2 ring-amber-500/20 font-semibold'
+                    : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-700'
+                }`}
+              >
+                <div className={`p-2 rounded-md ${f.type === 'client_visit' ? 'bg-amber-600 text-white' : 'bg-slate-100 text-slate-500'}`}>
+                  <MapPin className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="text-sm">Client Visit / On-Site</div>
+                  <div className="text-xs text-slate-500 font-normal">Travel to client location / site</div>
+                </div>
+              </button>
+            </div>
+          </div>
+
+          {/* Title */}
+          <div className="space-y-1.5">
+            <Label htmlFor="appt-title" className="text-xs font-semibold text-slate-700">Title / Subject *</Label>
+            <Input
+              id="appt-title"
+              placeholder="e.g. Annual Tax Audit Discussion, GST Return Verification"
+              value={f.title}
+              onChange={e => setF({ ...f, title: e.target.value })}
+              required
+            />
+          </div>
+
+          {/* Client & Location */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold text-slate-700">Linked Client (Optional)</Label>
+              <Select value={f.clientId || 'none'} onValueChange={v => handleClientSelect(v === 'none' ? '' : v)}>
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Select client..." />
+                </SelectTrigger>
+                <SelectContent className="max-h-60">
+                  <SelectItem value="none">-- No Client / General --</SelectItem>
+                  {clients.map(c => (
+                    <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="appt-location" className="text-xs font-semibold text-slate-700">
+                {f.type === 'in_office' ? 'Room / Branch Name' : 'Client Address / Venue'}
+              </Label>
+              <Input
+                id="appt-location"
+                placeholder={f.type === 'in_office' ? 'e.g. Conference Room A, Cabin 3' : 'e.g. Plot 45, Industrial Estate, MIDC'}
+                value={f.locationAddress}
+                onChange={e => setF({ ...f, locationAddress: e.target.value })}
+              />
+            </div>
+          </div>
+
+          {/* Date, Start Time, End Time & Status */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="appt-date" className="text-xs font-semibold text-slate-700">Date *</Label>
+              <Input
+                id="appt-date"
+                type="date"
+                value={f.date}
+                onChange={e => setF({ ...f, date: e.target.value })}
+                required
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="appt-start" className="text-xs font-semibold text-slate-700">Start Time</Label>
+              <Input
+                id="appt-start"
+                type="time"
+                value={f.startTime}
+                onChange={e => setF({ ...f, startTime: e.target.value })}
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="appt-end" className="text-xs font-semibold text-slate-700">End Time</Label>
+              <Input
+                id="appt-end"
+                type="time"
+                value={f.endTime}
+                onChange={e => setF({ ...f, endTime: e.target.value })}
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold text-slate-700">Status</Label>
+              <Select value={f.status} onValueChange={v => setF({ ...f, status: v })}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Scheduled">Scheduled</SelectItem>
+                  <SelectItem value="Completed">Completed</SelectItem>
+                  <SelectItem value="Rescheduled">Rescheduled</SelectItem>
+                  <SelectItem value="Cancelled">Cancelled</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          {/* Assignees (Multi-User Staff Assignment) */}
+          <div className="space-y-2 p-3.5 rounded-lg border bg-slate-50/80">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <div>
+                <Label className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                  <UserCheck className="w-4 h-4 text-indigo-600" /> Assigned Staff / Team Members
+                </Label>
+                <p className="text-[11px] text-slate-500">
+                  {currentUser.role === 'admin'
+                    ? 'Admin Assignment: Select one or multiple team members for this appointment.'
+                    : 'Assign yourself or team members attending this appointment.'}
+                </p>
+              </div>
+
+              <div className="flex gap-2 text-xs">
+                <button type="button" onClick={selectSelfOnly} className="text-indigo-600 hover:underline">Myself only</button>
+                <span className="text-slate-300">|</span>
+                <button type="button" onClick={selectAllUsers} className="text-indigo-600 hover:underline">Select all</button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 max-h-40 overflow-y-auto">
+              {users.map(u => {
+                const isAssigned = (f.assignedUserIds || []).includes(u.id);
+                return (
+                  <button
+                    key={u.id}
+                    type="button"
+                    onClick={() => toggleUserAssign(u.id)}
+                    className={`p-2 rounded-md border text-left text-xs flex items-center justify-between transition ${
+                      isAssigned
+                        ? 'bg-indigo-100/70 border-indigo-300 text-indigo-900 font-semibold'
+                        : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <div className={`w-3.5 h-3.5 rounded flex items-center justify-center text-[10px] ${
+                        isAssigned ? 'bg-indigo-600 text-white' : 'border border-slate-300 bg-white'
+                      }`}>
+                        {isAssigned && '✓'}
+                      </div>
+                      <span className="truncate">{u.name}</span>
+                    </div>
+                    <span className="text-[10px] text-slate-400 capitalize">{u.role}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Agenda / Notes */}
+          <div className="space-y-1.5">
+            <Label htmlFor="appt-notes" className="text-xs font-semibold text-slate-700">Agenda / Notes</Label>
+            <Textarea
+              id="appt-notes"
+              placeholder="Meeting discussion points, documents required, key outcomes..."
+              rows={3}
+              value={f.notes}
+              onChange={e => setF({ ...f, notes: e.target.value })}
+            />
+          </div>
+
+          <DialogFooter className="pt-2 border-t">
+            <Button type="button" variant="outline" onClick={onClose} disabled={saving}>Cancel</Button>
+            <Button type="submit" disabled={saving} className="bg-indigo-600 hover:bg-indigo-700 text-white">
+              {saving ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+              {saving ? 'Saving...' : f.id ? 'Update Appointment' : 'Schedule Appointment'}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
 
