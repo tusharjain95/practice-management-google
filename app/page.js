@@ -10,7 +10,7 @@ import {
   IndianRupee, Building2, ChevronLeft, RotateCcw, Upload, KeyRound,
   BarChart3, ClipboardCheck, ShieldCheck, Database, DownloadCloud, UploadCloud,
   MessageSquare, Menu, X, ArrowUpDown, ArrowUp, ArrowDown, Send, Loader2,
-  Sun, Moon, FilePlus, PlusCircle, MinusCircle, Eye, MapPin, UserCheck, CalendarCheck, CheckSquare, Share2,
+  Sun, Moon, FilePlus, PlusCircle, MinusCircle, Eye, MapPin, UserCheck, CalendarCheck, CheckSquare, Share2, Filter, User, SlidersHorizontal,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -2246,6 +2246,7 @@ function Tasks({ user, viewParams = {}, setView }) {
   const [categoryFilter, setCategoryFilter] = useState(viewParams.category || 'all');
   const [assignedFilter, setAssignedFilter] = useState(viewParams.assignedTo || 'all');
   const [discussionFilter, setDiscussionFilter] = useState(viewParams.discussion || 'all');
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [detail, setDetail] = useState(null);
@@ -2425,8 +2426,9 @@ function Tasks({ user, viewParams = {}, setView }) {
         }
       />
       <Card>
-        <CardContent className="pt-4">
-          <div className="grid grid-cols-1 md:grid-cols-6 gap-2 mb-4">
+        <CardContent className="pt-4 p-3 sm:p-6">
+          {/* Desktop Filter Bar */}
+          <div className="hidden md:grid grid-cols-6 gap-2 mb-4">
             <div className="relative">
               <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
               <Input placeholder="Search tasks..." value={q} onChange={e => setQ(e.target.value)} className="pl-9" />
@@ -2470,130 +2472,372 @@ function Tasks({ user, viewParams = {}, setView }) {
               </SelectContent>
             </Select>
           </div>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="cursor-pointer select-none hover:bg-slate-100/50 transition py-3" onClick={() => handleSort('title')}>
-                  <div className="flex items-center gap-1">
-                    Title
-                    {sortField === 'title' ? (
-                      sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-indigo-600" /> : <ArrowDown className="w-3.5 h-3.5 text-indigo-600" />
-                    ) : (
-                      <ArrowUpDown className="w-3.5 h-3.5 text-slate-300" />
+
+          {/* Mobile Filter Header & Quick Chips */}
+          <div className="block md:hidden mb-4 space-y-2">
+            <div className="flex items-center gap-2">
+              <div className="relative flex-1">
+                <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
+                <Input placeholder="Search tasks..." value={q} onChange={e => setQ(e.target.value)} className="pl-9 h-10 text-sm" />
+              </div>
+              <Button
+                variant={activeFilterCount > 0 ? "default" : "outline"}
+                size="sm"
+                onClick={() => setMobileFiltersOpen(!mobileFiltersOpen)}
+                className="h-10 px-3 flex items-center gap-1.5 shrink-0"
+              >
+                <Filter className="w-4 h-4" />
+                <span className="text-xs font-medium">Filters</span>
+                {activeFilterCount > 0 && (
+                  <span className="bg-white text-indigo-700 dark:bg-indigo-600 dark:text-white rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold">
+                    {activeFilterCount}
+                  </span>
+                )}
+              </Button>
+            </div>
+
+            {/* Mobile Quick Chips Scroll Bar */}
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs no-scrollbar">
+              <button
+                onClick={() => { setStatusFilter('all'); setPriorityFilter('all'); setCategoryFilter('all'); setAssignedFilter('all'); setDiscussionFilter('all'); }}
+                className={`px-3 py-1.5 rounded-full whitespace-nowrap font-medium transition ${activeFilterCount === 0 ? 'bg-indigo-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'}`}
+              >
+                All ({tasks.length})
+              </button>
+              <button
+                onClick={() => setStatusFilter(statusFilter === 'action' ? 'all' : 'action')}
+                className={`px-3 py-1.5 rounded-full whitespace-nowrap font-medium transition ${statusFilter === 'action' ? 'bg-indigo-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'}`}
+              >
+                ✨ Action Required
+              </button>
+              <button
+                onClick={() => setStatusFilter(statusFilter === 'overdue' ? 'all' : 'overdue')}
+                className={`px-3 py-1.5 rounded-full whitespace-nowrap font-medium transition ${statusFilter === 'overdue' ? 'bg-red-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'}`}
+              >
+                🔴 Overdue
+              </button>
+              <button
+                onClick={() => setDiscussionFilter(discussionFilter === 'me' ? 'all' : 'me')}
+                className={`px-3 py-1.5 rounded-full whitespace-nowrap font-medium transition ${discussionFilter === 'me' ? 'bg-amber-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'}`}
+              >
+                🗣️ Awaiting Me
+              </button>
+            </div>
+
+            {/* Mobile Collapsible Filters Sheet */}
+            {mobileFiltersOpen && (
+              <div className="p-3 bg-slate-50 dark:bg-slate-900/90 rounded-xl border border-slate-200 dark:border-slate-800 space-y-3 mt-2 animate-in fade-in slide-in-from-top-2 duration-150">
+                <div className="flex items-center justify-between font-semibold text-xs text-slate-700 dark:text-slate-300 pb-2 border-b border-slate-200 dark:border-slate-800">
+                  <span>Filter Options</span>
+                  <button
+                    onClick={() => { setStatusFilter('all'); setPriorityFilter('all'); setCategoryFilter('all'); setAssignedFilter('all'); setDiscussionFilter('all'); }}
+                    className="text-indigo-600 dark:text-indigo-400 hover:underline font-normal"
+                  >
+                    Reset All
+                  </button>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div>
+                    <label className="text-[11px] font-medium text-slate-500 mb-1 block">Status</label>
+                    <Select value={statusFilter} onValueChange={setStatusFilter}>
+                      <SelectTrigger className="h-9 text-xs"><SelectValue placeholder="Status" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All</SelectItem>
+                        <SelectItem value="action">✨ Action Required</SelectItem>
+                        {TASK_STATUSES.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+                        <SelectItem value="overdue">Overdue</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-medium text-slate-500 mb-1 block">Priority</label>
+                    <Select value={priorityFilter} onValueChange={setPriorityFilter}>
+                      <SelectTrigger className="h-9 text-xs"><SelectValue placeholder="Priority" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All priorities</SelectItem>
+                        {PRIORITIES.map(p => <SelectItem key={p} value={p}>{p}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-medium text-slate-500 mb-1 block">Category</label>
+                    <Select value={categoryFilter} onValueChange={setCategoryFilter}>
+                      <SelectTrigger className="h-9 text-xs"><SelectValue placeholder="Category" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All categories</SelectItem>
+                        {TASK_CATEGORIES.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-medium text-slate-500 mb-1 block">Assigned Staff</label>
+                    <Select value={assignedFilter} onValueChange={setAssignedFilter}>
+                      <SelectTrigger className="h-9 text-xs"><SelectValue placeholder="Assigned" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All staff</SelectItem>
+                        {users.map(u => <SelectItem key={u.id} value={u.id}>{u.name}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="col-span-2">
+                    <label className="text-[11px] font-medium text-slate-500 mb-1 block">Discussion Status</label>
+                    <Select value={discussionFilter} onValueChange={setDiscussionFilter}>
+                      <SelectTrigger className="h-9 text-xs"><SelectValue placeholder="Discussion" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All tasks</SelectItem>
+                        <SelectItem value="me">🗣️ Awaiting my input</SelectItem>
+                        <SelectItem value="any">🗣️ Any discussion needed</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Handcrafted Mobile Card View (block md:hidden) */}
+          <div className="block md:hidden space-y-3">
+            {filtered.map(t => (
+              <div
+                key={t.id}
+                className={`p-4 rounded-xl border transition-all duration-200 shadow-xs bg-white dark:bg-slate-900 ${
+                  isOverdue(t)
+                    ? 'border-red-300 dark:border-red-900/60 bg-red-50/20 dark:bg-red-950/20'
+                    : 'border-slate-200/90 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
+                }`}
+              >
+                {/* Title & Status */}
+                <div className="flex items-start justify-between gap-2 mb-2">
+                  <button
+                    onClick={() => setDetail(t)}
+                    className="text-left font-semibold text-slate-900 dark:text-slate-100 text-sm hover:text-indigo-600 dark:hover:text-indigo-400 transition leading-snug flex-1"
+                  >
+                    {t.title}
+                  </button>
+                  <div className="shrink-0">
+                    <StatusBadge status={t.status} />
+                  </div>
+                </div>
+
+                {/* Sub-info Badges */}
+                <div className="flex items-center gap-1.5 flex-wrap text-xs mb-2.5">
+                  <Badge variant="outline" className="text-[11px] font-medium bg-slate-50 dark:bg-slate-800/80">{t.category}</Badge>
+                  <PriorityBadge priority={t.priority} />
+                  {t.clientName && (
+                    <span className="text-slate-500 dark:text-slate-400 text-[11px] font-medium truncate max-w-[150px]">
+                      👤 {t.clientName}
+                    </span>
+                  )}
+                  {t.comments?.length > 0 && (
+                    <span className="inline-flex items-center gap-1 text-[11px] text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 rounded-full px-2 py-0.5">
+                      <MessageSquare className="w-3 h-3 text-indigo-500" />
+                      {t.comments.length}
+                    </span>
+                  )}
+                </div>
+
+                {/* Discussion Notice */}
+                {t.needsDiscussion && (
+                  <div className="text-xs text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/40 border border-amber-200/80 dark:border-amber-900/50 p-2 rounded-lg flex items-center justify-between mb-2.5">
+                    <span className="flex items-center gap-1.5 font-medium">
+                      🗣️ Discussion: {userName(t.discussionWith)}
+                    </span>
+                    <button
+                      onClick={() => setDetail(t)}
+                      className="text-[11px] font-semibold text-amber-700 dark:text-amber-400 underline hover:text-amber-900"
+                    >
+                      View
+                    </button>
+                  </div>
+                )}
+
+                {/* Meta info & Action Buttons Footer */}
+                <div className="pt-2.5 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+                  <div className="space-y-0.5">
+                    <div className="flex items-center gap-1.5">
+                      <Calendar className="w-3.5 h-3.5 text-slate-400" />
+                      <span className={isOverdue(t) ? 'text-red-600 dark:text-red-400 font-bold' : ''}>
+                        {t.dueDate ? new Date(t.dueDate).toLocaleDateString() : 'No due date'}
+                      </span>
+                      {isOverdue(t) && <span className="text-[10px] text-red-600 dark:text-red-400 font-bold bg-red-100 dark:bg-red-950/60 px-1 rounded">OVERDUE</span>}
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <User className="w-3.5 h-3.5 text-slate-400" />
+                      <span>
+                        {(() => {
+                          const ids = (t.assignees && t.assignees.length) ? t.assignees : (t.assignedTo ? [t.assignedTo] : []);
+                          if (!ids.length) return 'Unassigned';
+                          const names = ids.map(userName);
+                          return names[0] + (names.length > 1 ? ` (+${names.length - 1})` : '');
+                        })()}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1 shrink-0">
+                    {t.status !== 'Completed' && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 px-2.5 text-xs border-emerald-300 dark:border-emerald-800 hover:bg-emerald-50 text-emerald-700 dark:text-emerald-400 font-medium"
+                        onClick={() => quickStatus(t, 'Completed')}
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5 mr-1" /> Complete
+                      </Button>
+                    )}
+                    <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={() => setDetail(t)} title="View Detail">
+                      <Eye className="w-4 h-4 text-slate-600 dark:text-slate-400" />
+                    </Button>
+                    {canEditTask(t) && (
+                      <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={() => { setEditing(t); setOpen(true); }} title="Edit Task">
+                        <Edit className="w-4 h-4 text-slate-600 dark:text-slate-400" />
+                      </Button>
+                    )}
+                    {canDeleteTask() && (
+                      <Button size="sm" variant="ghost" className="h-8 w-8 p-0 text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40" onClick={() => deleteTask(t.id)} title="Delete Task">
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
                     )}
                   </div>
-                </TableHead>
-                <TableHead className="cursor-pointer select-none hover:bg-slate-100/50 transition py-3" onClick={() => handleSort('category')}>
-                  <div className="flex items-center gap-1">
-                    Category
-                    {sortField === 'category' ? (
-                      sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-indigo-600" /> : <ArrowDown className="w-3.5 h-3.5 text-indigo-600" />
-                    ) : (
-                      <ArrowUpDown className="w-3.5 h-3.5 text-slate-300" />
-                    )}
-                  </div>
-                </TableHead>
-                <TableHead className="cursor-pointer select-none hover:bg-slate-100/50 transition py-3" onClick={() => handleSort('priority')}>
-                  <div className="flex items-center gap-1">
-                    Priority
-                    {sortField === 'priority' ? (
-                      sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-indigo-600" /> : <ArrowDown className="w-3.5 h-3.5 text-indigo-600" />
-                    ) : (
-                      <ArrowUpDown className="w-3.5 h-3.5 text-slate-300" />
-                    )}
-                  </div>
-                </TableHead>
-                <TableHead className="cursor-pointer select-none hover:bg-slate-100/50 transition py-3" onClick={() => handleSort('status')}>
-                  <div className="flex items-center gap-1">
-                    Status
-                    {sortField === 'status' ? (
-                      sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-indigo-600" /> : <ArrowDown className="w-3.5 h-3.5 text-indigo-600" />
-                    ) : (
-                      <ArrowUpDown className="w-3.5 h-3.5 text-slate-300" />
-                    )}
-                  </div>
-                </TableHead>
-                <TableHead className="cursor-pointer select-none hover:bg-slate-100/50 transition py-3" onClick={() => handleSort('dueDate')}>
-                  <div className="flex items-center gap-1">
-                    Due
-                    {sortField === 'dueDate' ? (
-                      sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-indigo-600" /> : <ArrowDown className="w-3.5 h-3.5 text-indigo-600" />
-                    ) : (
-                      <ArrowUpDown className="w-3.5 h-3.5 text-slate-300" />
-                    )}
-                  </div>
-                </TableHead>
-                <TableHead className="cursor-pointer select-none hover:bg-slate-100/50 transition py-3" onClick={() => handleSort('assignedTo')}>
-                  <div className="flex items-center gap-1">
-                    Assigned
-                    {sortField === 'assignedTo' ? (
-                      sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-indigo-600" /> : <ArrowDown className="w-3.5 h-3.5 text-indigo-600" />
-                    ) : (
-                      <ArrowUpDown className="w-3.5 h-3.5 text-slate-300" />
-                    )}
-                  </div>
-                </TableHead>
-                <TableHead className="text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filtered.map(t => (
-                <TableRow key={t.id} className={`hover:bg-slate-50 ${isOverdue(t) ? 'bg-red-50/50' : ''} ${t.needsDiscussion ? 'border-l-4 border-l-amber-400' : ''}`}>
-                  <TableCell>
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <button onClick={() => setDetail(t)} className="font-medium text-indigo-600 hover:underline text-left">{t.title}</button>
-                      {(t.comments?.length > 0) && (
-                        <button
-                          onClick={() => setDetail(t)}
-                          title={`${t.comments.length} comment${t.comments.length === 1 ? '' : 's'}`}
-                          className="inline-flex items-center gap-0.5 text-[11px] text-slate-500 hover:text-indigo-600 bg-slate-100 hover:bg-indigo-50 rounded-full px-1.5 py-0.5 transition"
-                        >
-                          <MessageSquare className="w-3 h-3" />
-                          <span className="leading-none">{t.comments.length}</span>
-                        </button>
+                </div>
+              </div>
+            ))}
+            {!filtered.length && (
+              <div className="text-center text-slate-500 py-10 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-dashed border-slate-200 dark:border-slate-800">
+                <CheckSquare className="w-8 h-8 mx-auto text-slate-400 mb-2 opacity-50" />
+                <p className="font-medium text-sm">No tasks found</p>
+                <p className="text-xs text-slate-400 mt-0.5">Try clearing filters or search query</p>
+              </div>
+            )}
+          </div>
+
+          {/* Desktop Table View (hidden md:block) */}
+          <div className="hidden md:block overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="cursor-pointer select-none hover:bg-slate-100/50 transition py-3" onClick={() => handleSort('title')}>
+                    <div className="flex items-center gap-1">
+                      Title
+                      {sortField === 'title' ? (
+                        sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-indigo-600" /> : <ArrowDown className="w-3.5 h-3.5 text-indigo-600" />
+                      ) : (
+                        <ArrowUpDown className="w-3.5 h-3.5 text-slate-300" />
                       )}
                     </div>
-                    {t.clientName && <div className="text-xs text-slate-500">Client: {t.clientName}</div>}
-                    {t.needsDiscussion && (
-                      <div className="text-[10px] text-amber-700 mt-0.5 inline-flex items-center gap-1 bg-amber-100 px-1.5 py-0.5 rounded mt-1">
-                        🗣️ Discussion: {userName(t.discussionWith)}
-                      </div>
-                    )}
-                  </TableCell>
-                  <TableCell><Badge variant="outline">{t.category}</Badge></TableCell>
-                  <TableCell><PriorityBadge priority={t.priority} /></TableCell>
-                  <TableCell><StatusBadge status={t.status} /></TableCell>
-                  <TableCell className="text-sm">
-                    {t.dueDate ? new Date(t.dueDate).toLocaleDateString() : '-'}
-                    {isOverdue(t) && <div className="text-xs text-red-600 font-semibold">OVERDUE</div>}
-                  </TableCell>
-                  <TableCell className="text-sm">
-                    {(() => {
-                      const ids = (t.assignees && t.assignees.length) ? t.assignees : (t.assignedTo ? [t.assignedTo] : []);
-                      if (!ids.length) return '-';
-                      const names = ids.map(userName);
-                      if (names.length === 1) return names[0];
-                      return <span title={names.join(', ')}>{names[0]} <Badge variant="outline" className="ml-1">+{names.length - 1}</Badge></span>;
-                    })()}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <div className="flex gap-1 justify-end">
-                      {t.status !== 'Completed' && (<Button size="sm" variant="ghost" onClick={() => quickStatus(t, 'Completed')} title="Mark complete"><CheckCircle2 className="w-4 h-4 text-emerald-600" /></Button>)}
-                      {canEditTask(t) && (<Button size="sm" variant="ghost" onClick={() => { setEditing(t); setOpen(true); }} title="Edit task"><Edit className="w-4 h-4" /></Button>)}
-                      {canDeleteTask() && (<Button size="sm" variant="ghost" onClick={() => deleteTask(t.id)}><Trash2 className="w-4 h-4 text-red-500" /></Button>)}
+                  </TableHead>
+                  <TableHead className="cursor-pointer select-none hover:bg-slate-100/50 transition py-3" onClick={() => handleSort('category')}>
+                    <div className="flex items-center gap-1">
+                      Category
+                      {sortField === 'category' ? (
+                        sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-indigo-600" /> : <ArrowDown className="w-3.5 h-3.5 text-indigo-600" />
+                      ) : (
+                        <ArrowUpDown className="w-3.5 h-3.5 text-slate-300" />
+                      )}
                     </div>
-                  </TableCell>
+                  </TableHead>
+                  <TableHead className="cursor-pointer select-none hover:bg-slate-100/50 transition py-3" onClick={() => handleSort('priority')}>
+                    <div className="flex items-center gap-1">
+                      Priority
+                      {sortField === 'priority' ? (
+                        sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-indigo-600" /> : <ArrowDown className="w-3.5 h-3.5 text-indigo-600" />
+                      ) : (
+                        <ArrowUpDown className="w-3.5 h-3.5 text-slate-300" />
+                      )}
+                    </div>
+                  </TableHead>
+                  <TableHead className="cursor-pointer select-none hover:bg-slate-100/50 transition py-3" onClick={() => handleSort('status')}>
+                    <div className="flex items-center gap-1">
+                      Status
+                      {sortField === 'status' ? (
+                        sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-indigo-600" /> : <ArrowDown className="w-3.5 h-3.5 text-indigo-600" />
+                      ) : (
+                        <ArrowUpDown className="w-3.5 h-3.5 text-slate-300" />
+                      )}
+                    </div>
+                  </TableHead>
+                  <TableHead className="cursor-pointer select-none hover:bg-slate-100/50 transition py-3" onClick={() => handleSort('dueDate')}>
+                    <div className="flex items-center gap-1">
+                      Due
+                      {sortField === 'dueDate' ? (
+                        sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-indigo-600" /> : <ArrowDown className="w-3.5 h-3.5 text-indigo-600" />
+                      ) : (
+                        <ArrowUpDown className="w-3.5 h-3.5 text-slate-300" />
+                      )}
+                    </div>
+                  </TableHead>
+                  <TableHead className="cursor-pointer select-none hover:bg-slate-100/50 transition py-3" onClick={() => handleSort('assignedTo')}>
+                    <div className="flex items-center gap-1">
+                      Assigned
+                      {sortField === 'assignedTo' ? (
+                        sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-indigo-600" /> : <ArrowDown className="w-3.5 h-3.5 text-indigo-600" />
+                      ) : (
+                        <ArrowUpDown className="w-3.5 h-3.5 text-slate-300" />
+                      )}
+                    </div>
+                  </TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
-              ))}
-              {!filtered.length && (<TableRow><TableCell colSpan={7} className="text-center text-slate-500 py-8">No tasks found.</TableCell></TableRow>)}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {filtered.map(t => (
+                  <TableRow key={t.id} className={`hover:bg-slate-50 dark:hover:bg-slate-800/50 ${isOverdue(t) ? 'bg-red-50/50 dark:bg-red-950/20' : ''} ${t.needsDiscussion ? 'border-l-4 border-l-amber-400' : ''}`}>
+                    <TableCell>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <button onClick={() => setDetail(t)} className="font-semibold text-indigo-600 dark:text-indigo-400 hover:underline text-left">{t.title}</button>
+                        {(t.comments?.length > 0) && (
+                          <button
+                            onClick={() => setDetail(t)}
+                            title={`${t.comments.length} comment${t.comments.length === 1 ? '' : 's'}`}
+                            className="inline-flex items-center gap-0.5 text-[11px] text-slate-500 hover:text-indigo-600 bg-slate-100 hover:bg-indigo-50 dark:bg-slate-800 dark:hover:bg-indigo-950/50 rounded-full px-1.5 py-0.5 transition"
+                          >
+                            <MessageSquare className="w-3 h-3" />
+                            <span className="leading-none">{t.comments.length}</span>
+                          </button>
+                        )}
+                      </div>
+                      {t.clientName && <div className="text-xs text-slate-500 dark:text-slate-400">Client: {t.clientName}</div>}
+                      {t.needsDiscussion && (
+                        <div className="text-[10px] text-amber-700 dark:text-amber-300 mt-0.5 inline-flex items-center gap-1 bg-amber-100 dark:bg-amber-950/50 px-1.5 py-0.5 rounded mt-1">
+                          🗣️ Discussion: {userName(t.discussionWith)}
+                        </div>
+                      )}
+                    </TableCell>
+                    <TableCell><Badge variant="outline">{t.category}</Badge></TableCell>
+                    <TableCell><PriorityBadge priority={t.priority} /></TableCell>
+                    <TableCell><StatusBadge status={t.status} /></TableCell>
+                    <TableCell className="text-sm">
+                      {t.dueDate ? new Date(t.dueDate).toLocaleDateString() : '-'}
+                      {isOverdue(t) && <div className="text-xs text-red-600 dark:text-red-400 font-semibold">OVERDUE</div>}
+                    </TableCell>
+                    <TableCell className="text-sm">
+                      {(() => {
+                        const ids = (t.assignees && t.assignees.length) ? t.assignees : (t.assignedTo ? [t.assignedTo] : []);
+                        if (!ids.length) return '-';
+                        const names = ids.map(userName);
+                        if (names.length === 1) return names[0];
+                        return <span title={names.join(', ')}>{names[0]} <Badge variant="outline" className="ml-1">+{names.length - 1}</Badge></span>;
+                      })()}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex gap-1 justify-end">
+                        {t.status !== 'Completed' && (<Button size="sm" variant="ghost" onClick={() => quickStatus(t, 'Completed')} title="Mark complete"><CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400" /></Button>)}
+                        {canEditTask(t) && (<Button size="sm" variant="ghost" onClick={() => { setEditing(t); setOpen(true); }} title="Edit task"><Edit className="w-4 h-4" /></Button>)}
+                        {canDeleteTask() && (<Button size="sm" variant="ghost" onClick={() => deleteTask(t.id)}><Trash2 className="w-4 h-4 text-red-500" /></Button>)}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+                {!filtered.length && (<TableRow><TableCell colSpan={7} className="text-center text-slate-500 py-8">No tasks found.</TableCell></TableRow>)}
+              </TableBody>
+            </Table>
+          </div>
           <Pagination
             currentPage={page}
             totalItems={totalItems}
             limit={25}
             onPageChange={(p) => setPage(p)}
-            className="-mx-6 -mb-6 mt-4 border-t"
+            className="-mx-3 sm:-mx-6 -mb-3 sm:-mb-6 mt-4 border-t"
           />
         </CardContent>
       </Card>
