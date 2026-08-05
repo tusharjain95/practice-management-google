@@ -2330,33 +2330,44 @@ function Tasks({ user, viewParams = {}, setView }) {
     if (viewParams.discussion) setDiscussionFilter(viewParams.discussion);
   }, [viewParams.status, viewParams.priority, viewParams.category, viewParams.assignedTo, viewParams.discussion]);
 
-  function userName(id) { return users.find(u => u.id === id)?.name || '-'; }
+  function userName(id) {
+    if (!id) return '-';
+    const u = (users || []).find(x => x && x.id === id);
+    return u ? u.name : id;
+  }
   function isOverdue(t) {
-    if (t.status === 'Completed' || !t.dueDate) return false;
-    return new Date(t.dueDate) < new Date(new Date().setHours(0,0,0,0));
+    if (!t || t.status === 'Completed' || !t.dueDate) return false;
+    const d = new Date(t.dueDate);
+    if (isNaN(d.getTime())) return false;
+    return d < new Date(new Date().setHours(0,0,0,0));
   }
   const filtered = useMemo(() => {
     const today = new Date(); today.setHours(0,0,0,0);
-    const list = tasks.filter(t => {
+    const list = (tasks || []).filter(t => {
+      if (!t) return false;
       if (statusFilter === 'overdue') {
         if (t.status === 'Completed') return false;
-        if (!t.dueDate || new Date(t.dueDate) >= today) return false;
+        if (!t.dueDate) return false;
+        const d = new Date(t.dueDate);
+        if (isNaN(d.getTime()) || d >= today) return false;
       } else if (statusFilter === 'action') {
         if (t.status === 'Completed') return false;
       } else if (statusFilter !== 'all' && t.status !== statusFilter) return false;
       if (priorityFilter !== 'all' && t.priority !== priorityFilter) return false;
       if (categoryFilter !== 'all' && t.category !== categoryFilter) return false;
-      if (assignedFilter !== 'all' && t.assignedTo !== assignedFilter) return false;
+      if (assignedFilter !== 'all' && t.assignedTo !== assignedFilter && !(Array.isArray(t.assignees) && t.assignees.includes(assignedFilter))) return false;
       if (discussionFilter === 'me') {
-        if (!t.needsDiscussion || t.discussionWith !== user.id) return false;
+        if (!t.needsDiscussion || t.discussionWith !== user?.id) return false;
+      } else if (discussionFilter === 'mine') {
+        if (!t.needsDiscussion || (t.discussionRaisedBy !== user?.id && t.assignedTo !== user?.id)) return false;
       } else if (discussionFilter === 'any') {
         if (!t.needsDiscussion) return false;
       }
-      if (debouncedQ && !`${t.title} ${t.description} ${t.clientName || ''}`.toLowerCase().includes(debouncedQ.toLowerCase())) return false;
+      if (debouncedQ && !`${t.title || ''} ${t.description || ''} ${t.clientName || ''}`.toLowerCase().includes(debouncedQ.toLowerCase())) return false;
       return true;
     });
 
-    const priorityOrder = { 'High': 1, 'Medium': 2, 'Low': 3 };
+    const priorityOrder = { 'High': 1, 'Medium': 2, 'Low': 3, 'Urgent': 0 };
 
     return [...list].sort((a, b) => {
       let valA = '';
@@ -2369,8 +2380,8 @@ function Tasks({ user, viewParams = {}, setView }) {
         valA = (a.category || '').toLowerCase();
         valB = (b.category || '').toLowerCase();
       } else if (sortField === 'priority') {
-        const orderA = priorityOrder[a.priority] || 4;
-        const orderB = priorityOrder[b.priority] || 4;
+        const orderA = priorityOrder[a.priority] !== undefined ? priorityOrder[a.priority] : 4;
+        const orderB = priorityOrder[b.priority] !== undefined ? priorityOrder[b.priority] : 4;
         return sortOrder === 'asc' ? orderA - orderB : orderB - orderA;
       } else if (sortField === 'status') {
         valA = (a.status || '').toLowerCase();
@@ -2392,7 +2403,7 @@ function Tasks({ user, viewParams = {}, setView }) {
       if (valA > valB) return sortOrder === 'asc' ? 1 : -1;
       return 0;
     });
-  }, [tasks, debouncedQ, statusFilter, priorityFilter, categoryFilter, assignedFilter, discussionFilter, sortField, sortOrder, users]);
+  }, [tasks, debouncedQ, statusFilter, priorityFilter, categoryFilter, assignedFilter, discussionFilter, sortField, sortOrder, users, user?.id]);
 
   async function deleteTask(id) {
     if (!confirm('Delete task?')) return;
@@ -2412,6 +2423,14 @@ function Tasks({ user, viewParams = {}, setView }) {
     exportToExcel(rows, `tasks_${new Date().toISOString().slice(0, 10)}.xlsx`);
     toast.success(`Exported ${rows.length} tasks`);
   }
+
+  const activeFilterCount =
+    (statusFilter !== 'all' ? 1 : 0) +
+    (priorityFilter !== 'all' ? 1 : 0) +
+    (categoryFilter !== 'all' ? 1 : 0) +
+    (assignedFilter !== 'all' ? 1 : 0) +
+    (discussionFilter !== 'all' ? 1 : 0) +
+    (q && q.trim() !== '' ? 1 : 0);
 
   return (
     <div className="space-y-4">
@@ -2433,7 +2452,7 @@ function Tasks({ user, viewParams = {}, setView }) {
               <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
               <Input placeholder="Search tasks..." value={q} onChange={e => setQ(e.target.value)} className="pl-9" />
             </div>
-            <Select value={statusFilter} onValueChange={setStatusFilter}>
+            <Select value={statusFilter || 'all'} onValueChange={setStatusFilter}>
               <SelectTrigger><SelectValue placeholder="Status" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All</SelectItem>
@@ -2442,32 +2461,36 @@ function Tasks({ user, viewParams = {}, setView }) {
                 <SelectItem value="overdue">Overdue</SelectItem>
               </SelectContent>
             </Select>
-            <Select value={priorityFilter} onValueChange={setPriorityFilter}>
+            <Select value={priorityFilter || 'all'} onValueChange={setPriorityFilter}>
               <SelectTrigger><SelectValue placeholder="Priority" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All priorities</SelectItem>
                 {PRIORITIES.map(p => <SelectItem key={p} value={p}>{p}</SelectItem>)}
               </SelectContent>
             </Select>
-            <Select value={categoryFilter} onValueChange={setCategoryFilter}>
+            <Select value={categoryFilter || 'all'} onValueChange={setCategoryFilter}>
               <SelectTrigger><SelectValue placeholder="Category" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All categories</SelectItem>
                 {TASK_CATEGORIES.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
               </SelectContent>
             </Select>
-            <Select value={assignedFilter} onValueChange={setAssignedFilter}>
+            <Select value={assignedFilter || 'all'} onValueChange={setAssignedFilter}>
               <SelectTrigger><SelectValue placeholder="Assigned" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All staff</SelectItem>
-                {users.map(u => <SelectItem key={u.id} value={u.id}>{u.name}</SelectItem>)}
+                {(users || []).filter(u => u && u.id).map(u => <SelectItem key={u.id} value={u.id}>{u.name || u.id}</SelectItem>)}
+                {assignedFilter && assignedFilter !== 'all' && !(users || []).some(u => u && u.id === assignedFilter) && (
+                  <SelectItem value={assignedFilter}>{userName(assignedFilter)}</SelectItem>
+                )}
               </SelectContent>
             </Select>
-            <Select value={discussionFilter} onValueChange={setDiscussionFilter}>
+            <Select value={discussionFilter || 'all'} onValueChange={setDiscussionFilter}>
               <SelectTrigger><SelectValue placeholder="Discussion" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All tasks</SelectItem>
                 <SelectItem value="me">🗣️ Awaiting my input</SelectItem>
+                <SelectItem value="mine">🗣️ My discussions</SelectItem>
                 <SelectItem value="any">🗣️ Any discussion needed</SelectItem>
               </SelectContent>
             </Select>
@@ -2499,7 +2522,7 @@ function Tasks({ user, viewParams = {}, setView }) {
             {/* Mobile Quick Chips Scroll Bar */}
             <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs no-scrollbar">
               <button
-                onClick={() => { setStatusFilter('all'); setPriorityFilter('all'); setCategoryFilter('all'); setAssignedFilter('all'); setDiscussionFilter('all'); }}
+                onClick={() => { setStatusFilter('all'); setPriorityFilter('all'); setCategoryFilter('all'); setAssignedFilter('all'); setDiscussionFilter('all'); setQ(''); }}
                 className={`px-3 py-1.5 rounded-full whitespace-nowrap font-medium transition ${activeFilterCount === 0 ? 'bg-indigo-600 text-white shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'}`}
               >
                 All ({tasks.length})
@@ -2530,7 +2553,7 @@ function Tasks({ user, viewParams = {}, setView }) {
                 <div className="flex items-center justify-between font-semibold text-xs text-slate-700 dark:text-slate-300 pb-2 border-b border-slate-200 dark:border-slate-800">
                   <span>Filter Options</span>
                   <button
-                    onClick={() => { setStatusFilter('all'); setPriorityFilter('all'); setCategoryFilter('all'); setAssignedFilter('all'); setDiscussionFilter('all'); }}
+                    onClick={() => { setStatusFilter('all'); setPriorityFilter('all'); setCategoryFilter('all'); setAssignedFilter('all'); setDiscussionFilter('all'); setQ(''); }}
                     className="text-indigo-600 dark:text-indigo-400 hover:underline font-normal"
                   >
                     Reset All
@@ -2539,7 +2562,7 @@ function Tasks({ user, viewParams = {}, setView }) {
                 <div className="grid grid-cols-2 gap-2 text-xs">
                   <div>
                     <label className="text-[11px] font-medium text-slate-500 mb-1 block">Status</label>
-                    <Select value={statusFilter} onValueChange={setStatusFilter}>
+                    <Select value={statusFilter || 'all'} onValueChange={setStatusFilter}>
                       <SelectTrigger className="h-9 text-xs"><SelectValue placeholder="Status" /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="all">All</SelectItem>
@@ -2551,7 +2574,7 @@ function Tasks({ user, viewParams = {}, setView }) {
                   </div>
                   <div>
                     <label className="text-[11px] font-medium text-slate-500 mb-1 block">Priority</label>
-                    <Select value={priorityFilter} onValueChange={setPriorityFilter}>
+                    <Select value={priorityFilter || 'all'} onValueChange={setPriorityFilter}>
                       <SelectTrigger className="h-9 text-xs"><SelectValue placeholder="Priority" /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="all">All priorities</SelectItem>
@@ -2561,7 +2584,7 @@ function Tasks({ user, viewParams = {}, setView }) {
                   </div>
                   <div>
                     <label className="text-[11px] font-medium text-slate-500 mb-1 block">Category</label>
-                    <Select value={categoryFilter} onValueChange={setCategoryFilter}>
+                    <Select value={categoryFilter || 'all'} onValueChange={setCategoryFilter}>
                       <SelectTrigger className="h-9 text-xs"><SelectValue placeholder="Category" /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="all">All categories</SelectItem>
@@ -2571,21 +2594,25 @@ function Tasks({ user, viewParams = {}, setView }) {
                   </div>
                   <div>
                     <label className="text-[11px] font-medium text-slate-500 mb-1 block">Assigned Staff</label>
-                    <Select value={assignedFilter} onValueChange={setAssignedFilter}>
+                    <Select value={assignedFilter || 'all'} onValueChange={setAssignedFilter}>
                       <SelectTrigger className="h-9 text-xs"><SelectValue placeholder="Assigned" /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="all">All staff</SelectItem>
-                        {users.map(u => <SelectItem key={u.id} value={u.id}>{u.name}</SelectItem>)}
+                        {(users || []).filter(u => u && u.id).map(u => <SelectItem key={u.id} value={u.id}>{u.name || u.id}</SelectItem>)}
+                        {assignedFilter && assignedFilter !== 'all' && !(users || []).some(u => u && u.id === assignedFilter) && (
+                          <SelectItem value={assignedFilter}>{userName(assignedFilter)}</SelectItem>
+                        )}
                       </SelectContent>
                     </Select>
                   </div>
                   <div className="col-span-2">
                     <label className="text-[11px] font-medium text-slate-500 mb-1 block">Discussion Status</label>
-                    <Select value={discussionFilter} onValueChange={setDiscussionFilter}>
+                    <Select value={discussionFilter || 'all'} onValueChange={setDiscussionFilter}>
                       <SelectTrigger className="h-9 text-xs"><SelectValue placeholder="Discussion" /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="all">All tasks</SelectItem>
                         <SelectItem value="me">🗣️ Awaiting my input</SelectItem>
+                        <SelectItem value="mine">🗣️ My discussions</SelectItem>
                         <SelectItem value="any">🗣️ Any discussion needed</SelectItem>
                       </SelectContent>
                     </Select>
@@ -2962,9 +2989,10 @@ function TaskForm({ users, initial, onClose, onSaved, currentUser }) {
             {f.needsDiscussion && (
               <div className="mt-3">
                 <Field label="Discuss with *">
-                  <Select value={f.discussionWith || ''} onValueChange={v => setF({ ...f, discussionWith: v })}>
+                  <Select value={f.discussionWith || 'none'} onValueChange={v => setF({ ...f, discussionWith: v === 'none' ? '' : v })}>
                     <SelectTrigger><SelectValue placeholder="Select admin or manager..." /></SelectTrigger>
                     <SelectContent>
+                      <SelectItem value="none">-- Select admin or manager --</SelectItem>
                       {seniors.map(u => <SelectItem key={u.id} value={u.id}>{u.name} ({u.role})</SelectItem>)}
                     </SelectContent>
                   </Select>
