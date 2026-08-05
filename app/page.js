@@ -2678,40 +2678,47 @@ function Tasks({ user, viewParams = {}, setView }) {
                   </div>
                 )}
 
-                {/* Meta info & Action Buttons Footer */}
-                <div className="pt-2.5 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-                  <div className="space-y-0.5">
-                    <div className="flex items-center gap-1.5">
-                      <Calendar className="w-3.5 h-3.5 text-slate-400" />
-                      <span className={isOverdue(t) ? 'text-red-600 dark:text-red-400 font-bold' : ''}>
-                        {t.dueDate ? new Date(t.dueDate).toLocaleDateString() : 'No due date'}
-                      </span>
-                      {isOverdue(t) && <span className="text-[10px] text-red-600 dark:text-red-400 font-bold bg-red-100 dark:bg-red-950/60 px-1 rounded">OVERDUE</span>}
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                      <User className="w-3.5 h-3.5 text-slate-400" />
-                      <span>
-                        {(() => {
-                          const ids = (t.assignees && t.assignees.length) ? t.assignees : (t.assignedTo ? [t.assignedTo] : []);
-                          if (!ids.length) return 'Unassigned';
-                          const names = ids.map(userName);
-                          return names[0] + (names.length > 1 ? ` (+${names.length - 1})` : '');
-                        })()}
-                      </span>
-                    </div>
+                {/* Meta info (Due date & Assigned staff) */}
+                <div className="pt-2.5 border-t border-slate-100 dark:border-slate-800/80 grid grid-cols-2 gap-2 text-xs text-slate-500 dark:text-slate-400 mb-2.5">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <Calendar className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                    <span className={`truncate ${isOverdue(t) ? 'text-red-600 dark:text-red-400 font-bold' : ''}`}>
+                      {t.dueDate ? new Date(t.dueDate).toLocaleDateString() : 'No due date'}
+                    </span>
+                    {isOverdue(t) && <span className="text-[10px] text-red-600 dark:text-red-400 font-bold bg-red-100 dark:bg-red-950/60 px-1 rounded shrink-0">OVERDUE</span>}
                   </div>
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <User className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                    <span className="truncate">
+                      {(() => {
+                        const ids = (t.assignees && t.assignees.length) ? t.assignees : (t.assignedTo ? [t.assignedTo] : []);
+                        if (!ids.length) return 'Unassigned';
+                        const names = ids.map(userName);
+                        return names[0] + (names.length > 1 ? ` (+${names.length - 1})` : '');
+                      })()}
+                    </span>
+                  </div>
+                </div>
 
-                  <div className="flex items-center gap-1 shrink-0">
-                    {t.status !== 'Completed' && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-8 px-2.5 text-xs border-emerald-300 dark:border-emerald-800 hover:bg-emerald-50 text-emerald-700 dark:text-emerald-400 font-medium"
-                        onClick={() => quickStatus(t, 'Completed')}
-                      >
-                        <CheckCircle2 className="w-3.5 h-3.5 mr-1" /> Complete
-                      </Button>
-                    )}
+                {/* Bottom Action Bar */}
+                <div className="pt-2 border-t border-slate-100 dark:border-slate-800/60 flex items-center justify-between">
+                  {t.status !== 'Completed' ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-8 px-3 text-xs border-emerald-500/30 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 font-medium rounded-lg shrink-0"
+                      onClick={() => quickStatus(t, 'Completed')}
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5 mr-1.5 text-emerald-600 dark:text-emerald-400" />
+                      Mark Complete
+                    </Button>
+                  ) : (
+                    <span className="inline-flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400 font-medium bg-emerald-50 dark:bg-emerald-950/40 px-2.5 py-1 rounded-md">
+                      <CheckCircle2 className="w-3.5 h-3.5" /> Completed
+                    </span>
+                  )}
+
+                  <div className="flex items-center gap-1">
                     <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={() => setDetail(t)} title="View Detail">
                       <Eye className="w-4 h-4 text-slate-600 dark:text-slate-400" />
                     </Button>
