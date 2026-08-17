@@ -11,6 +11,7 @@ import {
   BarChart3, ClipboardCheck, ShieldCheck, Database, DownloadCloud, UploadCloud,
   MessageSquare, Menu, X, ArrowUpDown, ArrowUp, ArrowDown, Send, Loader2,
   Sun, Moon, FilePlus, PlusCircle, MinusCircle, Eye, MapPin, UserCheck, CalendarCheck, CheckSquare, Share2, Filter, User, SlidersHorizontal,
+  Layers, Milestone, ChevronDown, ChevronUp, Check, CornerDownRight,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -2330,6 +2331,8 @@ function Tasks({ user, viewParams = {}, setView }) {
     if (viewParams.discussion) setDiscussionFilter(viewParams.discussion);
   }, [viewParams.status, viewParams.priority, viewParams.category, viewParams.assignedTo, viewParams.discussion]);
 
+  const [expandedMilestones, setExpandedMilestones] = useState({});
+
   function userName(id) {
     if (!id) return '-';
     const u = (users || []).find(x => x && x.id === id);
@@ -2355,15 +2358,25 @@ function Tasks({ user, viewParams = {}, setView }) {
       } else if (statusFilter !== 'all' && t.status !== statusFilter) return false;
       if (priorityFilter !== 'all' && t.priority !== priorityFilter) return false;
       if (categoryFilter !== 'all' && t.category !== categoryFilter) return false;
-      if (assignedFilter !== 'all' && t.assignedTo !== assignedFilter && !(Array.isArray(t.assignees) && t.assignees.includes(assignedFilter))) return false;
-      if (discussionFilter === 'me') {
-        if (!t.needsDiscussion || t.discussionWith !== user?.id) return false;
-      } else if (discussionFilter === 'mine') {
-        if (!t.needsDiscussion || (t.discussionRaisedBy !== user?.id && t.assignedTo !== user?.id)) return false;
-      } else if (discussionFilter === 'any') {
-        if (!t.needsDiscussion) return false;
+      if (assignedFilter !== 'all') {
+        const isDirect = t.assignedTo === assignedFilter || (Array.isArray(t.assignees) && t.assignees.includes(assignedFilter));
+        const isMilestone = Array.isArray(t.milestones) && t.milestones.some(m => m.assignedTo === assignedFilter || (Array.isArray(m.assignees) && m.assignees.includes(assignedFilter)));
+        if (!isDirect && !isMilestone) return false;
       }
-      if (debouncedQ && !`${t.title || ''} ${t.description || ''} ${t.clientName || ''}`.toLowerCase().includes(debouncedQ.toLowerCase())) return false;
+      if (discussionFilter === 'me') {
+        const directDisc = t.needsDiscussion && t.discussionWith === user?.id;
+        const milestoneDisc = Array.isArray(t.milestones) && t.milestones.some(m => m.needsDiscussion && m.discussionWith === user?.id);
+        if (!directDisc && !milestoneDisc) return false;
+      } else if (discussionFilter === 'mine') {
+        const directDisc = t.needsDiscussion && (t.discussionRaisedBy === user?.id || t.assignedTo === user?.id);
+        const milestoneDisc = Array.isArray(t.milestones) && t.milestones.some(m => m.needsDiscussion && (m.discussionRaisedBy === user?.id || m.assignedTo === user?.id));
+        if (!directDisc && !milestoneDisc) return false;
+      } else if (discussionFilter === 'any') {
+        const directDisc = !!t.needsDiscussion;
+        const milestoneDisc = Array.isArray(t.milestones) && t.milestones.some(m => m.needsDiscussion);
+        if (!directDisc && !milestoneDisc) return false;
+      }
+      if (debouncedQ && !`${t.title || ''} ${t.description || ''} ${t.clientName || ''} ${(t.milestones || []).map(m => m.title).join(' ')}`.toLowerCase().includes(debouncedQ.toLowerCase())) return false;
       return true;
     });
 
@@ -2414,9 +2427,54 @@ function Tasks({ user, viewParams = {}, setView }) {
     try { await call(`tasks/${t.id}`, { method: 'PUT', body: { status } }); load(); toast.success(`Marked ${status}`); }
     catch (e) { toast.error(e.message); }
   }
+  async function quickToggleMilestone(task, milestoneId, completed) {
+    try {
+      const updatedMilestones = (task.milestones || []).map(m => {
+        if (m.id === milestoneId) {
+          return { ...m, completed, status: completed ? 'Completed' : 'Pending' };
+        }
+        return m;
+      });
+      await call(`tasks/${task.id}`, { method: 'PUT', body: { milestones: updatedMilestones } });
+      toast.success(completed ? 'Milestone ticked off' : 'Milestone pending');
+      load();
+    } catch (e) {
+      toast.error(e.message);
+    }
+  }
+  async function quickConvertToBigger(task) {
+    try {
+      const initialMilestone = {
+        id: (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : `m_${Date.now()}`,
+        title: `${task.title} - Phase 1`,
+        description: '',
+        dueDate: task.dueDate || '',
+        assignedTo: task.assignedTo || (task.assignees?.[0]) || user?.id || '',
+        assignees: task.assignees || (task.assignedTo ? [task.assignedTo] : []),
+        completed: false,
+        status: 'Pending',
+        needsDiscussion: false,
+        discussionWith: ''
+      };
+      await call(`tasks/${task.id}`, {
+        method: 'PUT',
+        body: {
+          isBiggerTask: true,
+          milestones: (task.milestones && task.milestones.length > 0) ? task.milestones : [initialMilestone]
+        }
+      });
+      toast.success('Task converted to Bigger Task with Milestones!');
+      load();
+    } catch (e) {
+      toast.error(e.message);
+    }
+  }
   function doExport() {
     const rows = filtered.map(t => ({
       Title: t.title, Category: t.category, Priority: t.priority, Status: t.status,
+      Type: t.isBiggerTask ? 'Bigger Task (Project)' : 'Normal Task',
+      MilestonesCount: (t.milestones || []).length,
+      CompletedMilestones: (t.milestones || []).filter(m => m.completed).length,
       DueDate: t.dueDate, AssignedTo: userName(t.assignedTo), Client: t.clientName || '',
       Description: t.description, CreatedAt: t.createdAt,
     }));
@@ -2450,7 +2508,7 @@ function Tasks({ user, viewParams = {}, setView }) {
           <div className="hidden md:grid grid-cols-6 gap-2 mb-4">
             <div className="relative">
               <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
-              <Input placeholder="Search tasks..." value={q} onChange={e => setQ(e.target.value)} className="pl-9" />
+              <Input placeholder="Search tasks & milestones..." value={q} onChange={e => setQ(e.target.value)} className="pl-9" />
             </div>
             <Select value={statusFilter || 'all'} onValueChange={setStatusFilter}>
               <SelectTrigger><SelectValue placeholder="Status" /></SelectTrigger>
@@ -2624,118 +2682,203 @@ function Tasks({ user, viewParams = {}, setView }) {
 
           {/* Handcrafted Mobile Card View (block md:hidden) */}
           <div className="block md:hidden space-y-3">
-            {filtered.map(t => (
-              <div
-                key={t.id}
-                className={`p-4 rounded-xl border transition-all duration-200 shadow-xs bg-white dark:bg-slate-900 ${
-                  isOverdue(t)
-                    ? 'border-red-300 dark:border-red-900/60 bg-red-50/20 dark:bg-red-950/20'
-                    : 'border-slate-200/90 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
-                }`}
-              >
-                {/* Title & Status */}
-                <div className="flex items-start justify-between gap-2 mb-2">
-                  <button
-                    onClick={() => setDetail(t)}
-                    className="text-left font-semibold text-slate-900 dark:text-slate-100 text-sm hover:text-indigo-600 dark:hover:text-indigo-400 transition leading-snug flex-1"
-                  >
-                    {t.title}
-                  </button>
-                  <div className="shrink-0">
-                    <StatusBadge status={t.status} />
+            {filtered.map(t => {
+              const milestones = t.milestones || [];
+              const hasMilestones = t.isBiggerTask || milestones.length > 0;
+              const completedMilestones = milestones.filter(m => m.completed).length;
+              const isExpanded = !!expandedMilestones[t.id];
+              const milestoneDiscussionCount = milestones.filter(m => m.needsDiscussion).length;
+
+              return (
+                <div
+                  key={t.id}
+                  className={`p-4 rounded-xl border transition-all duration-200 shadow-xs bg-white dark:bg-slate-900 ${
+                    isOverdue(t)
+                      ? 'border-red-300 dark:border-red-900/60 bg-red-50/20 dark:bg-red-950/20'
+                      : 'border-slate-200/90 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
+                  }`}
+                >
+                  {/* Title & Status */}
+                  <div className="flex items-start justify-between gap-2 mb-2">
+                    <div className="flex-1">
+                      <button
+                        onClick={() => setDetail(t)}
+                        className="text-left font-semibold text-slate-900 dark:text-slate-100 text-sm hover:text-indigo-600 dark:hover:text-indigo-400 transition leading-snug flex items-center gap-1.5 flex-wrap"
+                      >
+                        {t.title}
+                        {hasMilestones && (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-indigo-50 text-indigo-700 dark:bg-indigo-950/80 dark:text-indigo-300 px-2 py-0.5 rounded-md border border-indigo-200/60 dark:border-indigo-800/60">
+                            <Layers className="w-3 h-3" />
+                            Project ({completedMilestones}/{milestones.length})
+                          </span>
+                        )}
+                      </button>
+                    </div>
+                    <div className="shrink-0">
+                      <StatusBadge status={t.status} />
+                    </div>
                   </div>
-                </div>
 
-                {/* Sub-info Badges */}
-                <div className="flex items-center gap-1.5 flex-wrap text-xs mb-2.5">
-                  <Badge variant="outline" className="text-[11px] font-medium bg-slate-50 dark:bg-slate-800/80">{t.category}</Badge>
-                  <PriorityBadge priority={t.priority} />
-                  {t.clientName && (
-                    <span className="text-slate-500 dark:text-slate-400 text-[11px] font-medium truncate max-w-[150px]">
-                      👤 {t.clientName}
-                    </span>
-                  )}
-                  {t.comments?.length > 0 && (
-                    <span className="inline-flex items-center gap-1 text-[11px] text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 rounded-full px-2 py-0.5">
-                      <MessageSquare className="w-3 h-3 text-indigo-500" />
-                      {t.comments.length}
-                    </span>
-                  )}
-                </div>
-
-                {/* Discussion Notice */}
-                {t.needsDiscussion && (
-                  <div className="text-xs text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/40 border border-amber-200/80 dark:border-amber-900/50 p-2 rounded-lg flex items-center justify-between mb-2.5">
-                    <span className="flex items-center gap-1.5 font-medium">
-                      🗣️ Discussion: {userName(t.discussionWith)}
-                    </span>
-                    <button
-                      onClick={() => setDetail(t)}
-                      className="text-[11px] font-semibold text-amber-700 dark:text-amber-400 underline hover:text-amber-900"
-                    >
-                      View
-                    </button>
-                  </div>
-                )}
-
-                {/* Meta info (Due date & Assigned staff) */}
-                <div className="pt-2.5 border-t border-slate-100 dark:border-slate-800/80 grid grid-cols-2 gap-2 text-xs text-slate-500 dark:text-slate-400 mb-2.5">
-                  <div className="flex items-center gap-1.5 min-w-0">
-                    <Calendar className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                    <span className={`truncate ${isOverdue(t) ? 'text-red-600 dark:text-red-400 font-bold' : ''}`}>
-                      {t.dueDate ? new Date(t.dueDate).toLocaleDateString() : 'No due date'}
-                    </span>
-                    {isOverdue(t) && <span className="text-[10px] text-red-600 dark:text-red-400 font-bold bg-red-100 dark:bg-red-950/60 px-1 rounded shrink-0">OVERDUE</span>}
-                  </div>
-                  <div className="flex items-center gap-1.5 min-w-0">
-                    <User className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                    <span className="truncate">
-                      {(() => {
-                        const ids = (t.assignees && t.assignees.length) ? t.assignees : (t.assignedTo ? [t.assignedTo] : []);
-                        if (!ids.length) return 'Unassigned';
-                        const names = ids.map(userName);
-                        return names[0] + (names.length > 1 ? ` (+${names.length - 1})` : '');
-                      })()}
-                    </span>
-                  </div>
-                </div>
-
-                {/* Bottom Action Bar */}
-                <div className="pt-2 border-t border-slate-100 dark:border-slate-800/60 flex items-center justify-between">
-                  {t.status !== 'Completed' ? (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="h-8 px-3 text-xs border-emerald-500/30 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 font-medium rounded-lg shrink-0"
-                      onClick={() => quickStatus(t, 'Completed')}
-                    >
-                      <CheckCircle2 className="w-3.5 h-3.5 mr-1.5 text-emerald-600 dark:text-emerald-400" />
-                      Mark Complete
-                    </Button>
-                  ) : (
-                    <span className="inline-flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400 font-medium bg-emerald-50 dark:bg-emerald-950/40 px-2.5 py-1 rounded-md">
-                      <CheckCircle2 className="w-3.5 h-3.5" /> Completed
-                    </span>
-                  )}
-
-                  <div className="flex items-center gap-1">
-                    <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={() => setDetail(t)} title="View Detail">
-                      <Eye className="w-4 h-4 text-slate-600 dark:text-slate-400" />
-                    </Button>
-                    {canEditTask(t) && (
-                      <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={() => { setEditing(t); setOpen(true); }} title="Edit Task">
-                        <Edit className="w-4 h-4 text-slate-600 dark:text-slate-400" />
-                      </Button>
+                  {/* Sub-info Badges */}
+                  <div className="flex items-center gap-1.5 flex-wrap text-xs mb-2.5">
+                    <Badge variant="outline" className="text-[11px] font-medium bg-slate-50 dark:bg-slate-800/80">{t.category}</Badge>
+                    <PriorityBadge priority={t.priority} />
+                    {t.clientName && (
+                      <span className="text-slate-500 dark:text-slate-400 text-[11px] font-medium truncate max-w-[150px]">
+                        👤 {t.clientName}
+                      </span>
                     )}
-                    {canDeleteTask() && (
-                      <Button size="sm" variant="ghost" className="h-8 w-8 p-0 text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40" onClick={() => deleteTask(t.id)} title="Delete Task">
-                        <Trash2 className="w-4 h-4" />
-                      </Button>
+                    {t.comments?.length > 0 && (
+                      <span className="inline-flex items-center gap-1 text-[11px] text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 rounded-full px-2 py-0.5">
+                        <MessageSquare className="w-3 h-3 text-indigo-500" />
+                        {t.comments.length}
+                      </span>
                     )}
                   </div>
+
+                  {/* Bigger Task Milestone Progress Bar (Mobile) */}
+                  {hasMilestones && milestones.length > 0 && (
+                    <div className="mb-2.5 p-2 bg-slate-50 dark:bg-slate-800/50 rounded-lg border border-slate-200/70 dark:border-slate-800">
+                      <div className="flex items-center justify-between text-xs mb-1.5">
+                        <span className="font-medium text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                          <Milestone className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                          Milestones: {completedMilestones} of {milestones.length} done
+                        </span>
+                        <button
+                          onClick={() => setExpandedMilestones({ ...expandedMilestones, [t.id]: !isExpanded })}
+                          className="text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-0.5"
+                        >
+                          {isExpanded ? 'Hide' : 'View / Tick'} {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                        </button>
+                      </div>
+                      <div className="w-full bg-slate-200 dark:bg-slate-700 h-1.5 rounded-full overflow-hidden">
+                        <div
+                          className="bg-indigo-600 dark:bg-indigo-500 h-full rounded-full transition-all duration-300"
+                          style={{ width: `${milestones.length > 0 ? (completedMilestones / milestones.length) * 100 : 0}%` }}
+                        />
+                      </div>
+
+                      {/* Expandable Milestones Quick Checklist */}
+                      {isExpanded && (
+                        <div className="mt-2.5 pt-2 border-t border-slate-200/80 dark:border-slate-700/80 space-y-2 animate-in fade-in duration-150">
+                          {milestones.map((m, idx) => (
+                            <div key={m.id || idx} className="flex items-start gap-2 text-xs bg-white dark:bg-slate-900 p-2 rounded-md border border-slate-200/60 dark:border-slate-800">
+                              <input
+                                type="checkbox"
+                                checked={!!m.completed}
+                                onChange={(e) => quickToggleMilestone(t, m.id, e.target.checked)}
+                                className="mt-0.5 h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                              />
+                              <div className="flex-1 min-w-0">
+                                <div className={`font-medium ${m.completed ? 'line-through text-slate-400 dark:text-slate-500' : 'text-slate-800 dark:text-slate-200'}`}>
+                                  {m.title}
+                                </div>
+                                <div className="flex items-center gap-2 mt-0.5 text-[10px] text-slate-500 flex-wrap">
+                                  {m.dueDate && <span>📅 {new Date(m.dueDate).toLocaleDateString()}</span>}
+                                  {m.assignedTo && <span>👤 {userName(m.assignedTo)}</span>}
+                                  {m.needsDiscussion && (
+                                    <span className="text-amber-700 dark:text-amber-400 font-semibold bg-amber-50 dark:bg-amber-950/60 px-1 rounded">
+                                      🗣️ Discuss with {userName(m.discussionWith)}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Discussion Notice */}
+                  {(t.needsDiscussion || milestoneDiscussionCount > 0) && (
+                    <div className="text-xs text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/40 border border-amber-200/80 dark:border-amber-900/50 p-2 rounded-lg flex items-center justify-between mb-2.5">
+                      <span className="flex items-center gap-1.5 font-medium">
+                        🗣️ Discussion: {t.needsDiscussion ? userName(t.discussionWith) : `${milestoneDiscussionCount} milestone(s)`}
+                      </span>
+                      <button
+                        onClick={() => setDetail(t)}
+                        className="text-[11px] font-semibold text-amber-700 dark:text-amber-400 underline hover:text-amber-900"
+                      >
+                        View
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Meta info (Due date & Assigned staff) */}
+                  <div className="pt-2.5 border-t border-slate-100 dark:border-slate-800/80 grid grid-cols-2 gap-2 text-xs text-slate-500 dark:text-slate-400 mb-2.5">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <Calendar className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                      <span className={`truncate ${isOverdue(t) ? 'text-red-600 dark:text-red-400 font-bold' : ''}`}>
+                        {t.dueDate ? new Date(t.dueDate).toLocaleDateString() : 'No due date'}
+                      </span>
+                      {isOverdue(t) && <span className="text-[10px] text-red-600 dark:text-red-400 font-bold bg-red-100 dark:bg-red-950/60 px-1 rounded shrink-0">OVERDUE</span>}
+                    </div>
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <User className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                      <span className="truncate">
+                        {(() => {
+                          const ids = (t.assignees && t.assignees.length) ? t.assignees : (t.assignedTo ? [t.assignedTo] : []);
+                          if (!ids.length) return 'Unassigned';
+                          const names = ids.map(userName);
+                          return names[0] + (names.length > 1 ? ` (+${names.length - 1})` : '');
+                        })()}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Bottom Action Bar */}
+                  <div className="pt-2 border-t border-slate-100 dark:border-slate-800/60 flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      {t.status !== 'Completed' ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-8 px-3 text-xs border-emerald-500/30 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 font-medium rounded-lg shrink-0"
+                          onClick={() => quickStatus(t, 'Completed')}
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5 mr-1.5 text-emerald-600 dark:text-emerald-400" />
+                          Mark Complete
+                        </Button>
+                      ) : (
+                        <span className="inline-flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400 font-medium bg-emerald-50 dark:bg-emerald-950/40 px-2.5 py-1 rounded-md">
+                          <CheckCircle2 className="w-3.5 h-3.5" /> Completed
+                        </span>
+                      )}
+
+                      {!hasMilestones && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-8 px-2 text-[11px] text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40"
+                          onClick={() => quickConvertToBigger(t)}
+                          title="Convert to Bigger Task with Milestones"
+                        >
+                          <Layers className="w-3 h-3 mr-1" />
+                          + Milestones
+                        </Button>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-1">
+                      <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={() => setDetail(t)} title="View Detail">
+                        <Eye className="w-4 h-4 text-slate-600 dark:text-slate-400" />
+                      </Button>
+                      {canEditTask(t) && (
+                        <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={() => { setEditing(t); setOpen(true); }} title="Edit Task">
+                          <Edit className="w-4 h-4 text-slate-600 dark:text-slate-400" />
+                        </Button>
+                      )}
+                      {canDeleteTask() && (
+                        <Button size="sm" variant="ghost" className="h-8 w-8 p-0 text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40" onClick={() => deleteTask(t.id)} title="Delete Task">
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      )}
+                    </div>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
             {!filtered.length && (
               <div className="text-center text-slate-500 py-10 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-dashed border-slate-200 dark:border-slate-800">
                 <CheckSquare className="w-8 h-8 mx-auto text-slate-400 mb-2 opacity-50" />
@@ -2814,54 +2957,77 @@ function Tasks({ user, viewParams = {}, setView }) {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filtered.map(t => (
-                  <TableRow key={t.id} className={`hover:bg-slate-50 dark:hover:bg-slate-800/50 ${isOverdue(t) ? 'bg-red-50/50 dark:bg-red-950/20' : ''} ${t.needsDiscussion ? 'border-l-4 border-l-amber-400' : ''}`}>
-                    <TableCell>
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <button onClick={() => setDetail(t)} className="font-semibold text-indigo-600 dark:text-indigo-400 hover:underline text-left">{t.title}</button>
-                        {(t.comments?.length > 0) && (
-                          <button
-                            onClick={() => setDetail(t)}
-                            title={`${t.comments.length} comment${t.comments.length === 1 ? '' : 's'}`}
-                            className="inline-flex items-center gap-0.5 text-[11px] text-slate-500 hover:text-indigo-600 bg-slate-100 hover:bg-indigo-50 dark:bg-slate-800 dark:hover:bg-indigo-950/50 rounded-full px-1.5 py-0.5 transition"
-                          >
-                            <MessageSquare className="w-3 h-3" />
-                            <span className="leading-none">{t.comments.length}</span>
-                          </button>
-                        )}
-                      </div>
-                      {t.clientName && <div className="text-xs text-slate-500 dark:text-slate-400">Client: {t.clientName}</div>}
-                      {t.needsDiscussion && (
-                        <div className="text-[10px] text-amber-700 dark:text-amber-300 mt-0.5 inline-flex items-center gap-1 bg-amber-100 dark:bg-amber-950/50 px-1.5 py-0.5 rounded mt-1">
-                          🗣️ Discussion: {userName(t.discussionWith)}
+                {filtered.map(t => {
+                  const milestones = t.milestones || [];
+                  const hasMilestones = t.isBiggerTask || milestones.length > 0;
+                  const completedMilestones = milestones.filter(m => m.completed).length;
+                  const milestoneDiscussionCount = milestones.filter(m => m.needsDiscussion).length;
+
+                  return (
+                    <TableRow key={t.id} className={`hover:bg-slate-50 dark:hover:bg-slate-800/50 ${isOverdue(t) ? 'bg-red-50/50 dark:bg-red-950/20' : ''} ${t.needsDiscussion || milestoneDiscussionCount > 0 ? 'border-l-4 border-l-amber-400' : ''}`}>
+                      <TableCell>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <button onClick={() => setDetail(t)} className="font-semibold text-indigo-600 dark:text-indigo-400 hover:underline text-left">{t.title}</button>
+                          {hasMilestones && (
+                            <span
+                              onClick={() => setDetail(t)}
+                              className="cursor-pointer inline-flex items-center gap-1 text-[11px] font-bold bg-indigo-50 text-indigo-700 dark:bg-indigo-950/80 dark:text-indigo-300 px-2 py-0.5 rounded-full border border-indigo-200/60 dark:border-indigo-800/60 hover:bg-indigo-100 transition"
+                              title={`${completedMilestones} of ${milestones.length} milestones completed`}
+                            >
+                              <Layers className="w-3 h-3" />
+                              {completedMilestones}/{milestones.length}
+                            </span>
+                          )}
+                          {(t.comments?.length > 0) && (
+                            <button
+                              onClick={() => setDetail(t)}
+                              title={`${t.comments.length} comment${t.comments.length === 1 ? '' : 's'}`}
+                              className="inline-flex items-center gap-0.5 text-[11px] text-slate-500 hover:text-indigo-600 bg-slate-100 hover:bg-indigo-50 dark:bg-slate-800 dark:hover:bg-indigo-950/50 rounded-full px-1.5 py-0.5 transition"
+                            >
+                              <MessageSquare className="w-3 h-3" />
+                              <span className="leading-none">{t.comments.length}</span>
+                            </button>
+                          )}
                         </div>
-                      )}
-                    </TableCell>
-                    <TableCell><Badge variant="outline">{t.category}</Badge></TableCell>
-                    <TableCell><PriorityBadge priority={t.priority} /></TableCell>
-                    <TableCell><StatusBadge status={t.status} /></TableCell>
-                    <TableCell className="text-sm">
-                      {t.dueDate ? new Date(t.dueDate).toLocaleDateString() : '-'}
-                      {isOverdue(t) && <div className="text-xs text-red-600 dark:text-red-400 font-semibold">OVERDUE</div>}
-                    </TableCell>
-                    <TableCell className="text-sm">
-                      {(() => {
-                        const ids = (t.assignees && t.assignees.length) ? t.assignees : (t.assignedTo ? [t.assignedTo] : []);
-                        if (!ids.length) return '-';
-                        const names = ids.map(userName);
-                        if (names.length === 1) return names[0];
-                        return <span title={names.join(', ')}>{names[0]} <Badge variant="outline" className="ml-1">+{names.length - 1}</Badge></span>;
-                      })()}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex gap-1 justify-end">
-                        {t.status !== 'Completed' && (<Button size="sm" variant="ghost" onClick={() => quickStatus(t, 'Completed')} title="Mark complete"><CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400" /></Button>)}
-                        {canEditTask(t) && (<Button size="sm" variant="ghost" onClick={() => { setEditing(t); setOpen(true); }} title="Edit task"><Edit className="w-4 h-4" /></Button>)}
-                        {canDeleteTask() && (<Button size="sm" variant="ghost" onClick={() => deleteTask(t.id)}><Trash2 className="w-4 h-4 text-red-500" /></Button>)}
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
+                        {t.clientName && <div className="text-xs text-slate-500 dark:text-slate-400">Client: {t.clientName}</div>}
+                        {(t.needsDiscussion || milestoneDiscussionCount > 0) && (
+                          <div className="text-[10px] text-amber-700 dark:text-amber-300 mt-1 inline-flex items-center gap-1 bg-amber-100 dark:bg-amber-950/50 px-1.5 py-0.5 rounded">
+                            🗣️ Discussion: {t.needsDiscussion ? userName(t.discussionWith) : `${milestoneDiscussionCount} milestone(s)`}
+                          </div>
+                        )}
+                      </TableCell>
+                      <TableCell><Badge variant="outline">{t.category}</Badge></TableCell>
+                      <TableCell><PriorityBadge priority={t.priority} /></TableCell>
+                      <TableCell><StatusBadge status={t.status} /></TableCell>
+                      <TableCell className="text-sm">
+                        {t.dueDate ? new Date(t.dueDate).toLocaleDateString() : '-'}
+                        {isOverdue(t) && <div className="text-xs text-red-600 dark:text-red-400 font-semibold">OVERDUE</div>}
+                      </TableCell>
+                      <TableCell className="text-sm">
+                        {(() => {
+                          const ids = (t.assignees && t.assignees.length) ? t.assignees : (t.assignedTo ? [t.assignedTo] : []);
+                          if (!ids.length) return '-';
+                          const names = ids.map(userName);
+                          if (names.length === 1) return names[0];
+                          return <span title={names.join(', ')}>{names[0]} <Badge variant="outline" className="ml-1">+{names.length - 1}</Badge></span>;
+                        })()}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex gap-1 justify-end items-center">
+                          {t.status !== 'Completed' && (<Button size="sm" variant="ghost" onClick={() => quickStatus(t, 'Completed')} title="Mark complete"><CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400" /></Button>)}
+                          {!hasMilestones && (
+                            <Button size="sm" variant="ghost" onClick={() => quickConvertToBigger(t)} title="Convert to Bigger Task with Milestones">
+                              <Layers className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                            </Button>
+                          )}
+                          <Button size="sm" variant="ghost" onClick={() => setDetail(t)} title="View Detail"><Eye className="w-4 h-4 text-slate-600 dark:text-slate-400" /></Button>
+                          {canEditTask(t) && (<Button size="sm" variant="ghost" onClick={() => { setEditing(t); setOpen(true); }} title="Edit task"><Edit className="w-4 h-4" /></Button>)}
+                          {canDeleteTask() && (<Button size="sm" variant="ghost" onClick={() => deleteTask(t.id)}><Trash2 className="w-4 h-4 text-red-500" /></Button>)}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
                 {!filtered.length && (<TableRow><TableCell colSpan={7} className="text-center text-slate-500 py-8">No tasks found.</TableCell></TableRow>)}
               </TableBody>
             </Table>
@@ -2885,6 +3051,8 @@ function TaskForm({ users, initial, onClose, onSaved, currentUser }) {
   const { call } = useApi();
   const [f, setF] = useState(initial ? {
     ...initial,
+    isBiggerTask: !!initial.isBiggerTask || (Array.isArray(initial.milestones) && initial.milestones.length > 0),
+    milestones: Array.isArray(initial.milestones) ? initial.milestones : [],
     needsDiscussion: !!initial.needsDiscussion,
     discussionWith: initial.discussionWith || '',
     recurrence: initial.recurrence || 'none',
@@ -2893,10 +3061,53 @@ function TaskForm({ users, initial, onClose, onSaved, currentUser }) {
     title: '', description: '', category: 'Tax', priority: 'Medium',
     dueDate: '', assignedTo: currentUser?.id || '', assignees: currentUser?.id ? [currentUser.id] : [],
     clientName: '', recurrence: 'none',
+    isBiggerTask: false, milestones: [],
     needsDiscussion: false, discussionWith: '',
   });
+
+  const [newMilestoneTitle, setNewMilestoneTitle] = useState('');
+  const [newMilestoneDesc, setNewMilestoneDesc] = useState('');
+  const [newMilestoneDate, setNewMilestoneDate] = useState('');
+  const [newMilestoneAssignee, setNewMilestoneAssignee] = useState('');
+  const [newMilestoneDisc, setNewMilestoneDisc] = useState(false);
+  const [newMilestoneDiscWith, setNewMilestoneDiscWith] = useState('');
+
   const seniors = (users || []).filter(u => u.role === 'admin' || u.role === 'manager');
   const [saving, setSaving] = useState(false);
+
+  function addMilestone() {
+    if (!newMilestoneTitle.trim()) {
+      toast.error('Please enter milestone title');
+      return;
+    }
+    const m = {
+      id: (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : `m_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+      title: newMilestoneTitle.trim(),
+      description: newMilestoneDesc.trim(),
+      dueDate: newMilestoneDate || f.dueDate || '',
+      assignedTo: newMilestoneAssignee || f.assignedTo || (f.assignees?.[0]) || currentUser?.id || '',
+      assignees: newMilestoneAssignee ? [newMilestoneAssignee] : (f.assignees || (f.assignedTo ? [f.assignedTo] : [])),
+      completed: false,
+      status: 'Pending',
+      needsDiscussion: !!newMilestoneDisc,
+      discussionWith: newMilestoneDisc ? newMilestoneDiscWith : '',
+    };
+    setF(prev => ({ ...prev, milestones: [...(prev.milestones || []), m] }));
+    setNewMilestoneTitle('');
+    setNewMilestoneDesc('');
+    setNewMilestoneDate('');
+    setNewMilestoneAssignee('');
+    setNewMilestoneDisc(false);
+    setNewMilestoneDiscWith('');
+  }
+
+  function removeMilestone(idx) {
+    setF(prev => ({
+      ...prev,
+      milestones: (prev.milestones || []).filter((_, i) => i !== idx)
+    }));
+  }
+
   async function submit(e) {
     e.preventDefault(); setSaving(true);
     try {
@@ -2905,15 +3116,16 @@ function TaskForm({ users, initial, onClose, onSaved, currentUser }) {
       onSaved();
     } catch (e) { toast.error(e.message); } finally { setSaving(false); }
   }
+
   return (
     <Dialog open onOpenChange={onClose}>
-      <DialogContent className="max-w-2xl w-[95vw] max-h-[90vh] overflow-y-auto p-4 sm:p-6">
+      <DialogContent className="max-w-3xl w-[95vw] max-h-[90vh] overflow-y-auto p-4 sm:p-6">
         <DialogHeader>
           <DialogTitle>{initial ? 'Edit Task' : 'New Task'}</DialogTitle>
         </DialogHeader>
         <form onSubmit={submit} className="space-y-3">
           <Field label="Title *"><Input value={f.title} onChange={e => setF({ ...f, title: e.target.value })} required /></Field>
-          <Field label="Description"><Textarea value={f.description} onChange={e => setF({ ...f, description: e.target.value })} rows={3} /></Field>
+          <Field label="Description"><Textarea value={f.description} onChange={e => setF({ ...f, description: e.target.value })} rows={2} /></Field>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Field label="Category">
               <Select value={f.category} onValueChange={v => setF({ ...f, category: v })}>
@@ -2981,13 +3193,171 @@ function TaskForm({ users, initial, onClose, onSaved, currentUser }) {
               </Select>
             </Field>
           </div>
-          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+
+          {/* Bigger Task & Milestones Feature Toggle */}
+          <div className="rounded-xl border border-indigo-200 dark:border-indigo-900/60 bg-indigo-50/50 dark:bg-indigo-950/20 p-3.5 space-y-3">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <Label htmlFor="needsdisc" className="font-semibold text-amber-900 flex items-center gap-2">
+                <Label htmlFor="biggerTaskSwitch" className="font-semibold text-indigo-950 dark:text-indigo-200 flex items-center gap-2 text-sm cursor-pointer">
+                  <Layers className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                  Bigger Task (Project with Milestones)
+                </Label>
+                <p className="text-xs text-indigo-700/80 dark:text-indigo-300/80 mt-0.5">
+                  Convert this into a structured project with actionable milestones. Milestones inherit due dates and assignees by default.
+                </p>
+              </div>
+              <Switch
+                id="biggerTaskSwitch"
+                checked={!!f.isBiggerTask}
+                onCheckedChange={v => {
+                  setF({
+                    ...f,
+                    isBiggerTask: v,
+                    milestones: v && (!f.milestones || f.milestones.length === 0)
+                      ? [{
+                          id: (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : `m_${Date.now()}`,
+                          title: 'Milestone 1',
+                          description: '',
+                          dueDate: f.dueDate || '',
+                          assignedTo: f.assignedTo || (f.assignees?.[0]) || currentUser?.id || '',
+                          assignees: f.assignees || (f.assignedTo ? [f.assignedTo] : []),
+                          completed: false,
+                          status: 'Pending',
+                          needsDiscussion: false,
+                          discussionWith: ''
+                        }]
+                      : f.milestones
+                  });
+                }}
+              />
+            </div>
+
+            {f.isBiggerTask && (
+              <div className="pt-3 border-t border-indigo-200/70 dark:border-indigo-800/70 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-indigo-900 dark:text-indigo-200 uppercase tracking-wider">
+                    Milestones ({(f.milestones || []).length})
+                  </span>
+                </div>
+
+                {/* Milestone list */}
+                {(f.milestones || []).length > 0 ? (
+                  <div className="space-y-2">
+                    {f.milestones.map((m, idx) => (
+                      <div key={m.id || idx} className="p-2.5 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800 flex items-start justify-between gap-2 text-xs">
+                        <div className="space-y-1 flex-1 min-w-0">
+                          <div className="font-semibold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                            <span className="w-5 h-5 rounded-full bg-indigo-100 dark:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 font-bold flex items-center justify-center text-[10px]">
+                              {idx + 1}
+                            </span>
+                            <span className="truncate">{m.title}</span>
+                          </div>
+                          {m.description && <p className="text-slate-500 text-[11px] line-clamp-1">{m.description}</p>}
+                          <div className="flex items-center gap-2 text-[10px] text-slate-500 flex-wrap">
+                            {m.dueDate && <span>📅 {new Date(m.dueDate).toLocaleDateString()}</span>}
+                            {m.assignedTo && <span>👤 {users.find(u => u.id === m.assignedTo)?.name || m.assignedTo}</span>}
+                            {m.needsDiscussion && (
+                              <span className="text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/60 px-1.5 py-0.5 rounded font-medium">
+                                🗣️ Discuss with {users.find(u => u.id === m.discussionWith)?.name || m.discussionWith}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 w-7 p-0 text-red-500 hover:text-red-700 hover:bg-red-50"
+                          onClick={() => removeMilestone(idx)}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-slate-500 italic">No milestones added yet.</p>
+                )}
+
+                {/* Inline Milestone Adder */}
+                <div className="p-3 bg-white dark:bg-slate-900/80 rounded-lg border border-dashed border-indigo-300 dark:border-indigo-800 space-y-2.5">
+                  <div className="font-semibold text-xs text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                    <Plus className="w-3.5 h-3.5 text-indigo-600" /> Add Milestone
+                  </div>
+                  <Input
+                    placeholder="Milestone title (e.g. Document Verification, Filing, Client Review)"
+                    value={newMilestoneTitle}
+                    onChange={e => setNewMilestoneTitle(e.target.value)}
+                    className="h-8 text-xs"
+                  />
+                  <Input
+                    placeholder="Brief description or deliverables (optional)"
+                    value={newMilestoneDesc}
+                    onChange={e => setNewMilestoneDesc(e.target.value)}
+                    className="h-8 text-xs"
+                  />
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <div>
+                      <Label className="text-[10px] text-slate-500">Milestone Due Date</Label>
+                      <Input
+                        type="date"
+                        value={newMilestoneDate || (f.dueDate ? f.dueDate.slice(0,10) : '')}
+                        onChange={e => setNewMilestoneDate(e.target.value)}
+                        className="h-8 text-xs"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-[10px] text-slate-500">Assignee</Label>
+                      <Select value={newMilestoneAssignee || f.assignedTo || 'none'} onValueChange={v => setNewMilestoneAssignee(v === 'none' ? '' : v)}>
+                        <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Select staff..." /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="none">Default (Inherit task assignee)</SelectItem>
+                          {users.map(u => <SelectItem key={u.id} value={u.id}>{u.name} ({u.role})</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between pt-1">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        id="mDisc"
+                        checked={newMilestoneDisc}
+                        onChange={e => setNewMilestoneDisc(e.target.checked)}
+                        className="h-3.5 w-3.5 rounded border-slate-300 text-amber-600 focus:ring-amber-500 cursor-pointer"
+                      />
+                      <label htmlFor="mDisc" className="text-xs text-amber-900 dark:text-amber-300 font-medium cursor-pointer">
+                        🗣️ Needs Manager Discussion
+                      </label>
+                    </div>
+
+                    {newMilestoneDisc && (
+                      <Select value={newMilestoneDiscWith || 'none'} onValueChange={v => setNewMilestoneDiscWith(v === 'none' ? '' : v)}>
+                        <SelectTrigger className="h-7 text-xs w-48"><SelectValue placeholder="Select manager..." /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="none">-- Select manager --</SelectItem>
+                          {seniors.map(u => <SelectItem key={u.id} value={u.id}>{u.name}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  </div>
+
+                  <Button type="button" size="sm" variant="secondary" onClick={addMilestone} className="w-full text-xs h-8">
+                    <Plus className="w-3.5 h-3.5 mr-1" /> Add to Milestones
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/20 p-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <Label htmlFor="needsdisc" className="font-semibold text-amber-900 dark:text-amber-300 flex items-center gap-2 text-sm">
                   🗣️ Needs discussion with manager / admin
                 </Label>
-                <p className="text-xs text-amber-700 mt-1">
+                <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">
                   Flag this task for guidance. It will appear in the selected manager/admin&apos;s task list with a discussion badge.
                 </p>
               </div>
@@ -3021,16 +3391,163 @@ function TaskDetail({ task, users, currentUser, onClose, onChanged }) {
   const { call } = useApi();
   const [comment, setComment] = useState('');
   const [reassignTo, setReassignTo] = useState(task.assignedTo || '');
+
+  // State for adding a milestone inside task detail
+  const [newTitle, setNewTitle] = useState('');
+  const [newDesc, setNewDesc] = useState('');
+  const [newDueDate, setNewDueDate] = useState(task.dueDate ? task.dueDate.slice(0, 10) : '');
+  const [newAssignee, setNewAssignee] = useState(task.assignedTo || (task.assignees?.[0]) || currentUser?.id || '');
+  const [newDisc, setNewDisc] = useState(false);
+  const [newDiscWith, setNewDiscWith] = useState('');
+  const [newDiscNote, setNewDiscNote] = useState('');
+  const [addingMilestone, setAddingMilestone] = useState(false);
+
   function userName(id) { return users.find(u => u.id === id)?.name || '-'; }
+  const seniors = (users || []).filter(u => u.role === 'admin' || u.role === 'manager');
+
+  const milestones = Array.isArray(task.milestones) ? task.milestones : [];
+  const completedMilestones = milestones.filter(m => m.completed);
+  const percentComplete = milestones.length > 0 ? Math.round((completedMilestones.length / milestones.length) * 100) : 0;
+
   async function addComment() {
     if (!comment.trim()) return;
     try { await call(`tasks/${task.id}/comments`, { method: 'PUT', body: { comment } }); setComment(''); toast.success('Comment added'); onChanged(); }
     catch (e) { toast.error(e.message); }
   }
+
   async function setStatus(status) {
     try { await call(`tasks/${task.id}`, { method: 'PUT', body: { status } }); toast.success(`Marked ${status}`); onChanged(); }
     catch (e) { toast.error(e.message); }
   }
+
+  async function convertToBiggerTask() {
+    try {
+      const initialMilestone = {
+        id: (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : `m_${Date.now()}`,
+        title: `${task.title} - Phase 1`,
+        description: '',
+        dueDate: task.dueDate || '',
+        assignedTo: task.assignedTo || (task.assignees?.[0]) || currentUser?.id || '',
+        assignees: task.assignees || (task.assignedTo ? [task.assignedTo] : []),
+        completed: false,
+        status: 'Pending',
+        needsDiscussion: false,
+        discussionWith: ''
+      };
+      await call(`tasks/${task.id}`, {
+        method: 'PUT',
+        body: {
+          isBiggerTask: true,
+          milestones: milestones.length > 0 ? milestones : [initialMilestone]
+        }
+      });
+      toast.success('Task converted to Bigger Task with Milestones!');
+      onChanged();
+    } catch (e) {
+      toast.error(e.message);
+    }
+  }
+
+  async function toggleMilestoneStatus(milestoneId, completed) {
+    try {
+      const updated = milestones.map(m => {
+        if (m.id === milestoneId) {
+          return {
+            ...m,
+            completed,
+            status: completed ? 'Completed' : 'Pending',
+            completedAt: completed ? new Date().toISOString() : null,
+            completedBy: completed ? currentUser?.id : null,
+            completedByName: completed ? currentUser?.name : null
+          };
+        }
+        return m;
+      });
+      await call(`tasks/${task.id}`, { method: 'PUT', body: { milestones: updated } });
+      toast.success(completed ? 'Milestone marked completed' : 'Milestone reopened');
+      onChanged();
+    } catch (e) {
+      toast.error(e.message);
+    }
+  }
+
+  async function handleAddMilestone(e) {
+    e.preventDefault();
+    if (!newTitle.trim()) {
+      toast.error('Please provide a milestone title');
+      return;
+    }
+    try {
+      const newM = {
+        id: (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : `m_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+        title: newTitle.trim(),
+        description: newDesc.trim(),
+        dueDate: newDueDate || task.dueDate || '',
+        assignedTo: newAssignee || task.assignedTo || currentUser?.id || '',
+        assignees: newAssignee ? [newAssignee] : (task.assignees || (task.assignedTo ? [task.assignedTo] : [])),
+        completed: false,
+        status: 'Pending',
+        needsDiscussion: !!newDisc,
+        discussionWith: newDisc ? newDiscWith : '',
+        discussionNote: newDisc ? newDiscNote : '',
+        discussionRaisedAt: newDisc ? new Date().toISOString() : null,
+        discussionRaisedBy: newDisc ? currentUser?.id : null,
+        discussionRaisedByName: newDisc ? currentUser?.name : null,
+      };
+
+      const updated = [...milestones, newM];
+      await call(`tasks/${task.id}`, { method: 'PUT', body: { isBiggerTask: true, milestones: updated } });
+      toast.success('Milestone added successfully');
+      setNewTitle('');
+      setNewDesc('');
+      setNewDisc(false);
+      setNewDiscWith('');
+      setNewDiscNote('');
+      setAddingMilestone(false);
+      onChanged();
+    } catch (e) {
+      toast.error(e.message);
+    }
+  }
+
+  async function deleteMilestone(milestoneId) {
+    if (!confirm('Remove this milestone?')) return;
+    try {
+      const updated = milestones.filter(m => m.id !== milestoneId);
+      await call(`tasks/${task.id}`, { method: 'PUT', body: { milestones: updated } });
+      toast.success('Milestone removed');
+      onChanged();
+    } catch (e) {
+      toast.error(e.message);
+    }
+  }
+
+  async function toggleMilestoneDiscussion(milestone, needsDiscussion, discussionWith = '') {
+    try {
+      const updated = milestones.map(m => {
+        if (m.id === milestone.id) {
+          return {
+            ...m,
+            needsDiscussion,
+            discussionWith: needsDiscussion ? (discussionWith || m.discussionWith || seniors[0]?.id) : '',
+            discussionRaisedAt: needsDiscussion ? new Date().toISOString() : null,
+            discussionRaisedBy: needsDiscussion ? currentUser?.id : null,
+            discussionRaisedByName: needsDiscussion ? currentUser?.name : null,
+            discussionResolvedAt: !needsDiscussion ? new Date().toISOString() : null,
+            discussionResolvedBy: !needsDiscussion ? currentUser?.id : null,
+            discussionResolvedByName: !needsDiscussion ? currentUser?.name : null,
+          };
+        }
+        return m;
+      });
+      await call(`tasks/${task.id}`, { method: 'PUT', body: { milestones: updated } });
+      toast.success(needsDiscussion ? 'Milestone flagged for manager discussion' : 'Milestone discussion resolved');
+      onChanged();
+    } catch (e) {
+      toast.error(e.message);
+    }
+  }
+
   async function resolveDiscussion(reassign) {
     try {
       const body = { needsDiscussion: false, discussionWith: '', discussionResolvedAt: new Date().toISOString(), discussionResolvedBy: currentUser?.id, discussionResolvedByName: currentUser?.name };
@@ -3040,20 +3557,32 @@ function TaskDetail({ task, users, currentUser, onClose, onChanged }) {
       onChanged();
     } catch (e) { toast.error(e.message); }
   }
+
   const canResolveDiscussion = task.needsDiscussion && currentUser && (currentUser.role === 'admin' || currentUser.role === 'manager') && task.discussionWith === currentUser.id;
   const canEditStatus = currentUser && (currentUser.role !== 'staff' || task.assignedTo === currentUser.id);
+
   return (
     <Dialog open onOpenChange={onClose}>
-      <DialogContent className="max-w-2xl w-[95vw] max-h-[90vh] overflow-y-auto p-4 sm:p-6">
+      <DialogContent className="max-w-3xl w-[95vw] max-h-[90vh] overflow-y-auto p-4 sm:p-6 space-y-4">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2 flex-wrap">
-            {task.title} <StatusBadge status={task.status} />
+          <DialogTitle className="flex items-center gap-2 flex-wrap text-lg">
+            {task.title}
+            <StatusBadge status={task.status} />
+            {task.isBiggerTask && (
+              <Badge className="bg-indigo-600 text-white font-medium flex items-center gap-1">
+                <Layers className="w-3.5 h-3.5" />
+                Bigger Task
+              </Badge>
+            )}
             {task.needsDiscussion && (
-              <span className="text-xs bg-amber-100 text-amber-800 px-2 py-1 rounded-full">🗣️ Discussion: {userName(task.discussionWith)}</span>
+              <span className="text-xs bg-amber-100 text-amber-800 dark:bg-amber-950/80 dark:text-amber-300 px-2 py-1 rounded-full font-medium">
+                🗣️ Discussion: {userName(task.discussionWith)}
+              </span>
             )}
           </DialogTitle>
-          <DialogDescription>{task.description || 'No description'}</DialogDescription>
+          <DialogDescription>{task.description || 'No description provided'}</DialogDescription>
         </DialogHeader>
+
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
           <Info label="Category" value={task.category} />
           <Info label="Priority" value={task.priority} />
@@ -3065,10 +3594,259 @@ function TaskDetail({ task, users, currentUser, onClose, onChanged }) {
           {task.discussionRaisedByName && <Info label="Discussion raised by" value={task.discussionRaisedByName} />}
         </div>
 
+        {/* Bigger Task Milestones Section */}
+        {task.isBiggerTask ? (
+          <div className="rounded-xl border border-indigo-200 dark:border-indigo-900/60 bg-slate-50/50 dark:bg-slate-900/50 p-4 space-y-3.5">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <div className="flex items-center gap-2">
+                <Milestone className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
+                <h3 className="font-semibold text-sm text-slate-900 dark:text-slate-100">
+                  Project Milestones ({completedMilestones.length}/{milestones.length})
+                </h3>
+              </div>
+              <Button
+                size="sm"
+                variant={addingMilestone ? 'outline' : 'default'}
+                onClick={() => setAddingMilestone(!addingMilestone)}
+                className="h-8 text-xs"
+              >
+                {addingMilestone ? 'Cancel' : <><Plus className="w-3.5 h-3.5 mr-1" /> Add Milestone</>}
+              </Button>
+            </div>
+
+            {/* Progress Bar */}
+            <div className="space-y-1">
+              <div className="flex justify-between text-xs font-medium text-slate-600 dark:text-slate-400">
+                <span>Overall Progress</span>
+                <span>{percentComplete}% Complete</span>
+              </div>
+              <div className="w-full bg-slate-200 dark:bg-slate-700 h-2 rounded-full overflow-hidden">
+                <div
+                  className="bg-indigo-600 dark:bg-indigo-500 h-full rounded-full transition-all duration-300"
+                  style={{ width: `${percentComplete}%` }}
+                />
+              </div>
+            </div>
+
+            {/* Add Milestone Form */}
+            {addingMilestone && (
+              <form onSubmit={handleAddMilestone} className="p-3.5 bg-white dark:bg-slate-900 rounded-lg border border-indigo-200 dark:border-indigo-800 space-y-3 animate-in fade-in duration-150">
+                <div className="font-semibold text-xs text-indigo-900 dark:text-indigo-200">
+                  Add Milestone Deliverable
+                </div>
+                <Input
+                  placeholder="Milestone title (e.g. Audit documentation check) *"
+                  value={newTitle}
+                  onChange={e => setNewTitle(e.target.value)}
+                  className="text-xs"
+                  required
+                />
+                <Textarea
+                  placeholder="Milestone description or specific requirements..."
+                  value={newDesc}
+                  onChange={e => setNewDesc(e.target.value)}
+                  rows={2}
+                  className="text-xs"
+                />
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <Label className="text-xs">Due Date (inherited from task by default)</Label>
+                    <Input
+                      type="date"
+                      value={newDueDate}
+                      onChange={e => setNewDueDate(e.target.value)}
+                      className="text-xs mt-1"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-xs">Assigned Staff</Label>
+                    <Select value={newAssignee || 'none'} onValueChange={v => setNewAssignee(v === 'none' ? '' : v)}>
+                      <SelectTrigger className="text-xs mt-1"><SelectValue placeholder="Select staff..." /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">Default ({userName(task.assignedTo)})</SelectItem>
+                        {users.map(u => <SelectItem key={u.id} value={u.id}>{u.name} ({u.role})</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                <div className="p-2.5 bg-amber-50 dark:bg-amber-950/30 rounded-lg border border-amber-200 dark:border-amber-900/60 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="newMDisc" className="text-xs font-semibold text-amber-900 dark:text-amber-300 flex items-center gap-1.5 cursor-pointer">
+                      🗣️ Mark this milestone for manager discussion
+                    </Label>
+                    <Switch id="newMDisc" checked={newDisc} onCheckedChange={setNewDisc} />
+                  </div>
+                  {newDisc && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                      <div>
+                        <Label className="text-[11px] text-amber-800 dark:text-amber-400">Discuss with manager *</Label>
+                        <Select value={newDiscWith || 'none'} onValueChange={v => setNewDiscWith(v === 'none' ? '' : v)}>
+                          <SelectTrigger className="text-xs mt-0.5"><SelectValue placeholder="Select manager..." /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="none">-- Select manager --</SelectItem>
+                            {seniors.map(u => <SelectItem key={u.id} value={u.id}>{u.name}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div>
+                        <Label className="text-[11px] text-amber-800 dark:text-amber-400">Discussion note</Label>
+                        <Input
+                          placeholder="What needs guidance?"
+                          value={newDiscNote}
+                          onChange={e => setNewDiscNote(e.target.value)}
+                          className="text-xs mt-0.5"
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex justify-end gap-2">
+                  <Button type="button" variant="outline" size="sm" onClick={() => setAddingMilestone(false)}>Cancel</Button>
+                  <Button type="submit" size="sm">Save Milestone</Button>
+                </div>
+              </form>
+            )}
+
+            {/* Milestone List */}
+            {milestones.length > 0 ? (
+              <div className="space-y-2.5">
+                {milestones.map((m, idx) => {
+                  const mOverdue = m.dueDate && !m.completed && new Date(m.dueDate) < new Date(new Date().setHours(0,0,0,0));
+                  const isManagerForMilestone = m.needsDiscussion && currentUser && (currentUser.role === 'admin' || currentUser.role === 'manager') && m.discussionWith === currentUser.id;
+
+                  return (
+                    <div
+                      key={m.id || idx}
+                      className={`p-3 rounded-lg border transition-all ${
+                        m.completed
+                          ? 'bg-slate-50 dark:bg-slate-900/40 border-slate-200 dark:border-slate-800 opacity-75'
+                          : m.needsDiscussion
+                          ? 'bg-amber-50/40 dark:bg-amber-950/20 border-amber-300 dark:border-amber-900/60'
+                          : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800'
+                      }`}
+                    >
+                      <div className="flex items-start gap-3">
+                        <input
+                          type="checkbox"
+                          checked={!!m.completed}
+                          onChange={(e) => toggleMilestoneStatus(m.id, e.target.checked)}
+                          className="mt-1 h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between gap-2">
+                            <h4 className={`font-semibold text-xs sm:text-sm ${m.completed ? 'line-through text-slate-400 dark:text-slate-500' : 'text-slate-900 dark:text-slate-100'}`}>
+                              {idx + 1}. {m.title}
+                            </h4>
+                            <div className="flex items-center gap-1">
+                              {m.needsDiscussion ? (
+                                <Badge variant="outline" className="text-[10px] bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300 border-amber-300">
+                                  🗣️ Discussion
+                                </Badge>
+                              ) : null}
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 w-7 p-0 text-red-500 hover:bg-red-50"
+                                onClick={() => deleteMilestone(m.id)}
+                                title="Delete Milestone"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </Button>
+                            </div>
+                          </div>
+
+                          {m.description && (
+                            <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
+                              {m.description}
+                            </p>
+                          )}
+
+                          <div className="flex items-center gap-3 mt-2 text-xs text-slate-500 flex-wrap">
+                            <span className={`inline-flex items-center gap-1 ${mOverdue ? 'text-red-600 font-bold' : ''}`}>
+                              <Calendar className="w-3 h-3" />
+                              {m.dueDate ? new Date(m.dueDate).toLocaleDateString() : 'No due date'}
+                              {mOverdue && <span className="text-[10px] bg-red-100 text-red-700 px-1 rounded">OVERDUE</span>}
+                            </span>
+                            <span className="inline-flex items-center gap-1">
+                              <User className="w-3 h-3" />
+                              {userName(m.assignedTo)}
+                            </span>
+                            {m.completed && m.completedByName && (
+                              <span className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
+                                ✓ Completed by {m.completedByName}
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Milestone Discussion Callout */}
+                          {m.needsDiscussion && (
+                            <div className="mt-2 p-2 bg-amber-100/70 dark:bg-amber-950/50 rounded-md border border-amber-300/80 dark:border-amber-900/60 text-xs space-y-1.5">
+                              <div className="flex items-center justify-between">
+                                <span className="font-semibold text-amber-900 dark:text-amber-300">
+                                  🗣️ Awaiting input from: {userName(m.discussionWith)}
+                                </span>
+                                {isManagerForMilestone && (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-6 text-[10px] border-amber-400 text-amber-900 dark:text-amber-200 hover:bg-amber-200"
+                                    onClick={() => toggleMilestoneDiscussion(m, false)}
+                                  >
+                                    <CheckCircle2 className="w-3 h-3 mr-1" /> Mark Resolved
+                                  </Button>
+                                )}
+                              </div>
+                              {m.discussionNote && <p className="text-amber-800 dark:text-amber-400 text-[11px]">{m.discussionNote}</p>}
+                            </div>
+                          )}
+
+                          {/* Milestone Discussion Toggle button if not flagged */}
+                          {!m.needsDiscussion && !m.completed && (
+                            <div className="mt-2">
+                              <button
+                                type="button"
+                                onClick={() => toggleMilestoneDiscussion(m, true, seniors[0]?.id)}
+                                className="text-[11px] font-medium text-indigo-600 dark:text-indigo-400 hover:underline inline-flex items-center gap-1"
+                              >
+                                🗣️ Flag milestone for manager discussion
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="text-center py-6 border border-dashed rounded-lg text-xs text-slate-500">
+                No milestones added yet. Click &quot;Add Milestone&quot; above to break this task down.
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="rounded-xl border border-dashed border-indigo-200 dark:border-indigo-800/80 bg-indigo-50/30 dark:bg-indigo-950/10 p-4 flex items-center justify-between gap-3">
+            <div>
+              <h4 className="font-semibold text-sm text-indigo-950 dark:text-indigo-200 flex items-center gap-1.5">
+                <Layers className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                Want to break this down into Milestones?
+              </h4>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                Convert this task into a Bigger Task to create phased milestones, sub-deadlines, and manager discussion checkpoints.
+              </p>
+            </div>
+            <Button size="sm" onClick={convertToBiggerTask} className="shrink-0 bg-indigo-600 hover:bg-indigo-700 text-white">
+              <Layers className="w-3.5 h-3.5 mr-1" /> Convert to Bigger Task
+            </Button>
+          </div>
+        )}
+
         {canResolveDiscussion && (
-          <div className="rounded-lg border-2 border-amber-300 bg-amber-50 p-4 space-y-3">
-            <div className="font-semibold text-amber-900 flex items-center gap-2">🗣️ Awaiting your discussion</div>
-            <p className="text-xs text-amber-800">
+          <div className="rounded-lg border-2 border-amber-300 bg-amber-50 dark:bg-amber-950/40 p-4 space-y-3">
+            <div className="font-semibold text-amber-900 dark:text-amber-300 flex items-center gap-2">🗣️ Awaiting your discussion on parent task</div>
+            <p className="text-xs text-amber-800 dark:text-amber-400">
               Raised by <strong>{task.discussionRaisedByName || 'staff'}</strong>{task.discussionRaisedAt ? ` on ${new Date(task.discussionRaisedAt).toLocaleString()}` : ''}.
               Add comments below, then resolve and optionally re-assign back to a staff member.
             </p>
@@ -3102,7 +3880,7 @@ function TaskDetail({ task, users, currentUser, onClose, onChanged }) {
         )}
         <Separator />
         <div>
-          <div className="font-semibold mb-2">Comments</div>
+          <div className="font-semibold mb-2 text-sm">Comments & Activity</div>
           <ScrollArea className="h-40 border rounded-md p-2">
             {(task.comments || []).length === 0 && <div className="text-sm text-slate-500">No comments yet.</div>}
             {(task.comments || []).map(c => (

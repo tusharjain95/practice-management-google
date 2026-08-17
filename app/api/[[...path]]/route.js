@@ -933,10 +933,15 @@ async function handle(request, ctx) {
 
       const orgIds = (targetUser.orgs || []).map(o => o.orgId);
 
-      // Fetch Yesterday's Performance Statistics
+      // Fetch Yesterday's Performance Statistics (incorporating milestones)
       const completedYesterdayCount = await db.collection('tasks').countDocuments({
         orgId: { $in: orgIds },
-        $or: [{ assignedTo: targetUser.id }, { assignees: targetUser.id }],
+        $or: [
+          { assignedTo: targetUser.id },
+          { assignees: targetUser.id },
+          { 'milestones.assignedTo': targetUser.id },
+          { 'milestones.assignees': targetUser.id }
+        ],
         status: 'Completed',
         updatedAt: { $regex: '^' + yesterdayStr }
       });
@@ -949,14 +954,24 @@ async function handle(request, ctx) {
 
       const assignedYesterdayCount = await db.collection('tasks').countDocuments({
         orgId: { $in: orgIds },
-        $or: [{ assignedTo: targetUser.id }, { assignees: targetUser.id }],
+        $or: [
+          { assignedTo: targetUser.id },
+          { assignees: targetUser.id },
+          { 'milestones.assignedTo': targetUser.id },
+          { 'milestones.assignees': targetUser.id }
+        ],
         createdAt: { $regex: '^' + yesterdayStr }
       });
 
-      // Current workload counts
+      // Current workload counts (including milestone tasks)
       const pendingTasks = await db.collection('tasks').find({
         orgId: { $in: orgIds },
-        $or: [{ assignedTo: targetUser.id }, { assignees: targetUser.id }],
+        $or: [
+          { assignedTo: targetUser.id },
+          { assignees: targetUser.id },
+          { 'milestones.assignedTo': targetUser.id },
+          { 'milestones.assignees': targetUser.id }
+        ],
         status: { $ne: 'Completed' }
       }).toArray();
 
@@ -964,13 +979,47 @@ async function handle(request, ctx) {
       const overdueCount = pendingTasks.filter(t => t.dueDate && t.dueDate < dateStr).length;
       const dueTodayCount = pendingTasks.filter(t => t.dueDate === dateStr).length;
 
+      // Calculate milestone statistics for the user
+      let totalMilestonesCount = 0;
+      let completedMilestonesCount = 0;
+      let pendingMilestonesCount = 0;
+      let overdueMilestonesCount = 0;
+      let dueTodayMilestonesCount = 0;
+      let awaitingDiscussionMilestonesCount = 0;
+      let biggerTasksCount = 0;
+
+      pendingTasks.forEach(t => {
+        if (t.milestones && Array.isArray(t.milestones) && t.milestones.length > 0) {
+          biggerTasksCount++;
+          t.milestones.forEach(m => {
+            totalMilestonesCount++;
+            if (m.completed) {
+              completedMilestonesCount++;
+            } else {
+              pendingMilestonesCount++;
+              const mDue = m.dueDate || t.dueDate;
+              if (mDue && mDue < dateStr) overdueMilestonesCount++;
+              if (mDue && mDue === dateStr) dueTodayMilestonesCount++;
+              if (m.needsDiscussion) awaitingDiscussionMilestonesCount++;
+            }
+          });
+        }
+      });
+
       const performanceStats = {
         completedYesterdayCount,
         openedYesterdayCount,
         assignedYesterdayCount,
         pendingCount,
         overdueCount,
-        dueTodayCount
+        dueTodayCount,
+        totalMilestonesCount,
+        completedMilestonesCount,
+        pendingMilestonesCount,
+        overdueMilestonesCount,
+        dueTodayMilestonesCount,
+        awaitingDiscussionMilestonesCount,
+        biggerTasksCount
       };
 
       // Generate dynamic secure JWT token that expires in 24 hours to secure PDF access
@@ -1051,10 +1100,19 @@ async function handle(request, ctx) {
 
         const orgIds = (user.orgs || []).map(o => o.orgId);
 
-        // Fetch tasks
+        // Fetch user tasks including tasks where user is assigned to main task or any milestone
+        const taskUserFilter = {
+          $or: [
+            { assignedTo: userId },
+            { assignees: userId },
+            { 'milestones.assignedTo': userId },
+            { 'milestones.assignees': userId }
+          ]
+        };
+
         const completedYesterdayTasks = await db.collection('tasks').find({
           orgId: { $in: orgIds },
-          $or: [{ assignedTo: userId }, { assignees: userId }],
+          ...taskUserFilter,
           status: 'Completed',
           updatedAt: { $regex: '^' + yesterdayStr }
         }).toArray();
@@ -1067,23 +1125,13 @@ async function handle(request, ctx) {
 
         const assignedYesterdayTasks = await db.collection('tasks').find({
           orgId: { $in: orgIds },
-          $or: [{ assignedTo: userId }, { assignees: userId }],
+          ...taskUserFilter,
           createdAt: { $regex: '^' + yesterdayStr }
         }).toArray();
 
         const pendingTasks = await db.collection('tasks').find({
           orgId: { $in: orgIds },
-          $or: [{ assignedTo: userId }, { assignees: userId }],
-          status: { $ne: 'Completed' }
-        }).sort({ dueDate: 1 }).toArray();
-
-        const overdueTasks = pendingTasks.filter(t => t.dueDate && t.dueDate < date);
-        const dueTodayTasks = pendingTasks.filter(t => t.dueDate === date);
-        const otherPendingTasks = pendingTasks.filter(t => !t.dueDate || t.dueDate > date);
-
-        // Fetch all organization pending tasks (not just for the individual staff)
-        const allOrgPendingTasks = await db.collection('tasks').find({
-          orgId: { $in: orgIds },
+          ...taskUserFilter,
           status: { $ne: 'Completed' }
         }).sort({ dueDate: 1 }).toArray();
 
@@ -1105,28 +1153,135 @@ async function handle(request, ctx) {
           userNameMap[u.id] = u.name;
         });
 
-        // Map tasks for organization view with assignee names and org names
-        const mappedOrgTasks = allOrgPendingTasks.map(t => {
+        // Fetch clients to resolve client names if missing
+        const clientsList = await db.collection('clients').find({
+          orgId: { $in: orgIds }
+        }).toArray();
+        const clientNameMap = {};
+        clientsList.forEach(c => {
+          clientNameMap[c.id] = c.name;
+        });
+
+        // Helper to normalize task and its milestones
+        const normalizeTaskWithMilestones = (t) => {
           let assignedName = 'Unassigned';
-          if (t.assignees && t.assignees.length > 0) {
+          if (t.assignees && Array.isArray(t.assignees) && t.assignees.length > 0) {
             assignedName = t.assignees.map(id => userNameMap[id] || id).join(', ');
           } else if (t.assignedTo) {
             assignedName = userNameMap[t.assignedTo] || t.assignedTo;
           }
+
+          const clientName = t.clientName || (t.clientId ? clientNameMap[t.clientId] : 'General');
+          const isBiggerTask = !!(t.isBiggerTask || (t.milestones && t.milestones.length > 0));
+
+          const normalizedMilestones = (t.milestones && Array.isArray(t.milestones))
+            ? t.milestones.map((m, idx) => {
+                const mAssignees = Array.isArray(m.assignees) && m.assignees.length > 0
+                  ? m.assignees
+                  : (m.assignedTo ? [m.assignedTo] : (t.assignees || (t.assignedTo ? [t.assignedTo] : [])));
+                
+                const mAssignedToName = mAssignees.length > 0
+                  ? mAssignees.map(id => userNameMap[id] || id).join(', ')
+                  : (m.assignedTo ? (userNameMap[m.assignedTo] || m.assignedTo) : assignedName);
+
+                const mDueDate = m.dueDate || t.dueDate || '';
+                const mCompleted = !!m.completed || m.status === 'Completed';
+                const isOverdue = !mCompleted && mDueDate && mDueDate < date;
+                const isDueToday = !mCompleted && mDueDate && mDueDate === date;
+                const isAssignedToUser = mAssignees.includes(userId) || m.assignedTo === userId;
+
+                return {
+                  id: m.id || `m_${idx}`,
+                  title: m.title || `Milestone ${idx + 1}`,
+                  description: m.description || '',
+                  dueDate: mDueDate,
+                  completed: mCompleted,
+                  status: mCompleted ? 'Completed' : (m.status || (isOverdue ? 'Overdue' : 'Pending')),
+                  assignedTo: m.assignedTo || (mAssignees[0] || ''),
+                  assignees: mAssignees,
+                  assignedToName: mAssignedToName,
+                  isAssignedToUser,
+                  isOverdue,
+                  isDueToday,
+                  needsDiscussion: !!m.needsDiscussion,
+                  discussionWith: m.discussionWith || '',
+                  discussionWithName: m.discussionWith ? (userNameMap[m.discussionWith] || m.discussionWith) : '',
+                  discussionNote: m.discussionNote || '',
+                  discussionRaisedByName: m.discussionRaisedByName || '',
+                  recurrence: m.recurrence || t.recurrence || 'none'
+                };
+              })
+            : [];
+
           return {
             ...t,
             orgName: orgNameMap[t.orgId] || 'Unknown Organisation',
-            assignedToName: assignedName
+            clientName,
+            assignedToName: assignedName,
+            isBiggerTask,
+            milestones: normalizedMilestones
           };
+        };
+
+        const normalizedPendingTasks = pendingTasks.map(normalizeTaskWithMilestones);
+        const overdueTasks = normalizedPendingTasks.filter(t => t.dueDate && t.dueDate < date);
+        const dueTodayTasks = normalizedPendingTasks.filter(t => t.dueDate === date);
+        const otherPendingTasks = normalizedPendingTasks.filter(t => !t.dueDate || t.dueDate > date);
+
+        // Fetch all organization pending tasks (not just for the individual staff)
+        const allOrgPendingTasks = await db.collection('tasks').find({
+          orgId: { $in: orgIds },
+          status: { $ne: 'Completed' }
+        }).sort({ dueDate: 1 }).toArray();
+
+        // Map tasks for organization view with assignee names and org names
+        const mappedOrgTasks = allOrgPendingTasks.map(normalizeTaskWithMilestones);
+
+        // Milestone Statistics
+        let totalMilestonesCount = 0;
+        let completedMilestonesCount = 0;
+        let pendingMilestonesCount = 0;
+        let overdueMilestonesCount = 0;
+        let dueTodayMilestonesCount = 0;
+        let awaitingDiscussionMilestonesCount = 0;
+        let biggerTasksCount = 0;
+
+        normalizedPendingTasks.forEach(t => {
+          if (t.milestones && t.milestones.length > 0) {
+            biggerTasksCount++;
+            t.milestones.forEach(m => {
+              totalMilestonesCount++;
+              if (m.completed) {
+                completedMilestonesCount++;
+              } else {
+                pendingMilestonesCount++;
+                if (m.isOverdue) overdueMilestonesCount++;
+                if (m.isDueToday) dueTodayMilestonesCount++;
+                if (m.needsDiscussion) awaitingDiscussionMilestonesCount++;
+              }
+            });
+          }
         });
+
+        const milestoneCompletionRate = totalMilestonesCount > 0
+          ? Math.round((completedMilestonesCount / totalMilestonesCount) * 100)
+          : 0;
 
         const pdfData = {
           completedYesterdayCount: completedYesterdayTasks.length,
           openedYesterdayCount: openedYesterdayTasks.length,
           assignedYesterdayCount: assignedYesterdayTasks.length,
-          pendingCount: pendingTasks.length,
+          pendingCount: normalizedPendingTasks.length,
           overdueCount: overdueTasks.length,
           dueTodayCount: dueTodayTasks.length,
+          totalMilestonesCount,
+          completedMilestonesCount,
+          pendingMilestonesCount,
+          overdueMilestonesCount,
+          dueTodayMilestonesCount,
+          awaitingDiscussionMilestonesCount,
+          biggerTasksCount,
+          milestoneCompletionRate,
           overdueTasks,
           dueTodayTasks,
           pendingTasks: otherPendingTasks,
@@ -1640,6 +1795,9 @@ async function handle(request, ctx) {
             { assignedTo: me.id },
             { assignees: me.id },
             { needsDiscussion: true, discussionWith: me.id },
+            { 'milestones.assignedTo': me.id },
+            { 'milestones.assignees': me.id },
+            { 'milestones.needsDiscussion': true, 'milestones.discussionWith': me.id },
           ]
         });
       }
@@ -1653,6 +1811,7 @@ async function handle(request, ctx) {
         const priority = url.searchParams.get('priority');
         const category = url.searchParams.get('category');
         const discussion = url.searchParams.get('discussion');
+        const isBigger = url.searchParams.get('isBiggerTask');
         const q = url.searchParams.get('q');
 
         if (status) {
@@ -1666,7 +1825,14 @@ async function handle(request, ctx) {
           }
         }
         if (assignedTo) {
-          andClauses.push({ $or: [{ assignedTo }, { assignees: assignedTo }] });
+          andClauses.push({
+            $or: [
+              { assignedTo },
+              { assignees: assignedTo },
+              { 'milestones.assignedTo': assignedTo },
+              { 'milestones.assignees': assignedTo }
+            ]
+          });
         }
         if (priority) {
           andClauses.push({ priority });
@@ -1674,10 +1840,42 @@ async function handle(request, ctx) {
         if (category) {
           andClauses.push({ category });
         }
+        if (isBigger === 'true') {
+          andClauses.push({
+            $or: [
+              { isBiggerTask: true },
+              { 'milestones.0': { $exists: true } }
+            ]
+          });
+        } else if (isBigger === 'false') {
+          andClauses.push({
+            $and: [
+              { isBiggerTask: { $ne: true } },
+              { $or: [{ milestones: { $exists: false } }, { milestones: { $size: 0 } }] }
+            ]
+          });
+        }
         if (discussion === 'me') {
-          andClauses.push({ needsDiscussion: true, discussionWith: me.id });
-        } else if (discussion === 'true') {
-          andClauses.push({ needsDiscussion: true });
+          andClauses.push({
+            $or: [
+              { needsDiscussion: true, discussionWith: me.id },
+              { 'milestones.needsDiscussion': true, 'milestones.discussionWith': me.id }
+            ]
+          });
+        } else if (discussion === 'mine') {
+          andClauses.push({
+            $or: [
+              { needsDiscussion: true, discussionRaisedBy: me.id },
+              { 'milestones.needsDiscussion': true, 'milestones.discussionRaisedBy': me.id }
+            ]
+          });
+        } else if (discussion === 'true' || discussion === 'any') {
+          andClauses.push({
+            $or: [
+              { needsDiscussion: true },
+              { 'milestones.needsDiscussion': true }
+            ]
+          });
         }
         if (q && q.trim()) {
           const rx = new RegExp(q.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
@@ -1685,7 +1883,9 @@ async function handle(request, ctx) {
             $or: [
               { title: rx },
               { description: rx },
-              { clientName: rx }
+              { clientName: rx },
+              { 'milestones.title': rx },
+              { 'milestones.description': rx }
             ]
           });
         }
@@ -1699,9 +1899,36 @@ async function handle(request, ctx) {
       const total = await db.collection('tasks').countDocuments(filter);
       const data = await db.collection('tasks').find(filter).project({ _id: 0 }).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).toArray();
 
-      // Backfill assignees for legacy single-assignee tasks
+      // Backfill and safely normalize assignees and milestones for legacy tasks
       for (const t of data) {
-        if (!t.assignees || !t.assignees.length) t.assignees = t.assignedTo ? [t.assignedTo] : [];
+        if (!t.assignees || !Array.isArray(t.assignees) || !t.assignees.length) {
+          t.assignees = t.assignedTo ? [t.assignedTo] : [];
+        }
+        if (!Array.isArray(t.milestones)) t.milestones = [];
+        t.milestones = t.milestones.map((m, idx) => ({
+          id: m.id || `m_${idx}_${Date.now()}`,
+          title: m.title || '',
+          description: m.description || '',
+          dueDate: m.dueDate || t.dueDate || '',
+          assignedTo: m.assignedTo || (Array.isArray(m.assignees) && m.assignees[0]) || t.assignedTo || '',
+          assignees: Array.isArray(m.assignees) && m.assignees.length ? m.assignees : (m.assignedTo ? [m.assignedTo] : t.assignees),
+          completed: !!m.completed,
+          status: m.completed ? 'Completed' : (m.status || 'Pending'),
+          needsDiscussion: !!m.needsDiscussion,
+          discussionWith: m.discussionWith || '',
+          discussionNote: m.discussionNote || '',
+          discussionRaisedAt: m.discussionRaisedAt || null,
+          discussionRaisedBy: m.discussionRaisedBy || null,
+          discussionRaisedByName: m.discussionRaisedByName || null,
+          discussionResolvedAt: m.discussionResolvedAt || null,
+          discussionResolvedBy: m.discussionResolvedBy || null,
+          discussionResolvedByName: m.discussionResolvedByName || null,
+          recurrence: m.recurrence || t.recurrence || 'none',
+        }));
+        if (t.isBiggerTask === undefined) t.isBiggerTask = t.milestones.length > 0;
+        if (!Array.isArray(t.comments)) t.comments = [];
+        if (t.needsDiscussion === undefined) t.needsDiscussion = false;
+        if (t.discussionWith === undefined) t.discussionWith = '';
       }
 
       return json({
@@ -1726,6 +1953,30 @@ async function handle(request, ctx) {
         assignees = [me.id];
       }
       const assignedTo = assignees[0] || ''; // primary for legacy
+
+      // Process initial milestones if provided
+      const rawMilestones = Array.isArray(body.milestones) ? body.milestones : [];
+      const milestones = rawMilestones.map((m, idx) => ({
+        id: m.id || uuidv4(),
+        title: m.title || `Milestone ${idx + 1}`,
+        description: m.description || '',
+        dueDate: m.dueDate || body.dueDate || '',
+        assignedTo: m.assignedTo || assignedTo || me.id,
+        assignees: Array.isArray(m.assignees) && m.assignees.length ? m.assignees : (m.assignedTo ? [m.assignedTo] : assignees),
+        status: m.completed ? 'Completed' : (m.status || 'Pending'),
+        completed: !!m.completed,
+        completedAt: m.completed ? (m.completedAt || new Date().toISOString()) : null,
+        completedBy: m.completed ? (m.completedBy || me.id) : null,
+        completedByName: m.completed ? (m.completedByName || me.name) : null,
+        needsDiscussion: !!m.needsDiscussion,
+        discussionWith: m.needsDiscussion ? (m.discussionWith || '') : '',
+        discussionNote: m.discussionNote || '',
+        discussionRaisedAt: m.needsDiscussion ? (m.discussionRaisedAt || new Date().toISOString()) : null,
+        discussionRaisedBy: m.needsDiscussion ? (m.discussionRaisedBy || me.id) : null,
+        discussionRaisedByName: m.needsDiscussion ? (m.discussionRaisedByName || me.name) : null,
+        order: typeof m.order === 'number' ? m.order : idx,
+      }));
+
       const task = {
         id: uuidv4(),
         orgId: me.activeOrgId,
@@ -1737,6 +1988,8 @@ async function handle(request, ctx) {
         assignedTo,
         assignees,
         status: 'Pending',
+        isBiggerTask: !!body.isBiggerTask || milestones.length > 0,
+        milestones,
         leadId: body.leadId || null,
         clientId: body.clientId || null,
         clientName: body.clientName || '',
@@ -1753,7 +2006,7 @@ async function handle(request, ctx) {
         createdByName: me.name,
       };
       await db.collection('tasks').insertOne(task);
-      logActivity(db, me, 'create', 'task', task.id, { title: task.title });
+      logActivity(db, me, 'create', 'task', task.id, { title: task.title, isBiggerTask: task.isBiggerTask });
 
       // Send notifications asynchronously (WhatsApp & Telegram)
       try {
@@ -1860,13 +2113,80 @@ async function handle(request, ctx) {
         body.discussionWith = '';
       }
 
+      // Process milestones if provided
+      if (body.milestones !== undefined) {
+        const existingMilestones = Array.isArray(existing.milestones) ? existing.milestones : [];
+        const existingMap = new Map(existingMilestones.map(m => [m.id, m]));
+        const taskDueDate = body.dueDate || existing.dueDate || '';
+        const taskAssignedTo = body.assignedTo || existing.assignedTo || me.id;
+        const taskAssignees = Array.isArray(body.assignees) && body.assignees.length ? body.assignees : (existing.assignees || [taskAssignedTo]);
+
+        body.milestones = (Array.isArray(body.milestones) ? body.milestones : []).map((m, idx) => {
+          const mId = m.id || uuidv4();
+          const prev = existingMap.get(mId) || {};
+          const isCompleted = !!m.completed || m.status === 'Completed';
+          const wasCompleted = !!prev.completed || prev.status === 'Completed';
+
+          const needsDisc = !!m.needsDiscussion;
+          const prevNeedsDisc = !!prev.needsDiscussion;
+
+          let discRaisedAt = prev.discussionRaisedAt || null;
+          let discRaisedBy = prev.discussionRaisedBy || null;
+          let discRaisedByName = prev.discussionRaisedByName || null;
+          let discResolvedAt = prev.discussionResolvedAt || null;
+          let discResolvedBy = prev.discussionResolvedBy || null;
+          let discResolvedByName = prev.discussionResolvedByName || null;
+
+          if (needsDisc && !prevNeedsDisc) {
+            discRaisedAt = new Date().toISOString();
+            discRaisedBy = me.id;
+            discRaisedByName = me.name;
+          } else if (!needsDisc && prevNeedsDisc) {
+            discResolvedAt = new Date().toISOString();
+            discResolvedBy = me.id;
+            discResolvedByName = me.name;
+          }
+
+          return {
+            id: mId,
+            title: m.title || `Milestone ${idx + 1}`,
+            description: m.description || '',
+            dueDate: m.dueDate || taskDueDate || '',
+            assignedTo: m.assignedTo || taskAssignedTo,
+            assignees: Array.isArray(m.assignees) && m.assignees.length ? m.assignees : (m.assignedTo ? [m.assignedTo] : taskAssignees),
+            status: isCompleted ? 'Completed' : (m.status || 'Pending'),
+            completed: isCompleted,
+            completedAt: isCompleted ? (prev.completedAt || new Date().toISOString()) : null,
+            completedBy: isCompleted ? (prev.completedBy || me.id) : null,
+            completedByName: isCompleted ? (prev.completedByName || me.name) : null,
+            needsDiscussion: needsDisc,
+            discussionWith: needsDisc ? (m.discussionWith || '') : '',
+            discussionNote: m.discussionNote || '',
+            discussionRaisedAt: discRaisedAt,
+            discussionRaisedBy: discRaisedBy,
+            discussionRaisedByName: discRaisedByName,
+            discussionResolvedAt: discResolvedAt,
+            discussionResolvedBy: discResolvedBy,
+            discussionResolvedByName: discResolvedByName,
+            order: typeof m.order === 'number' ? m.order : idx,
+          };
+        });
+
+        if (body.isBiggerTask === undefined) {
+          body.isBiggerTask = body.milestones.length > 0 ? true : existing.isBiggerTask;
+        }
+      }
+
       if (me.role === 'staff') {
         const isAssignee = existing.assignedTo === me.id || (Array.isArray(existing.assignees) && existing.assignees.includes(me.id));
-        const isDiscussionTarget = existing.needsDiscussion && existing.discussionWith === me.id;
-        if (!isAssignee && !isDiscussionTarget) return json({ error: 'Forbidden' }, 403);
+        const isDiscussionTarget = (existing.needsDiscussion && existing.discussionWith === me.id) ||
+          (Array.isArray(existing.milestones) && existing.milestones.some(m => m.needsDiscussion && m.discussionWith === me.id));
+        const isMilestoneAssignee = Array.isArray(existing.milestones) && existing.milestones.some(m => m.assignedTo === me.id || (Array.isArray(m.assignees) && m.assignees.includes(me.id)));
+
+        if (!isAssignee && !isDiscussionTarget && !isMilestoneAssignee) return json({ error: 'Forbidden' }, 403);
         // Staff can fully edit (including reassigning to other users) any task they are part of.
         const allowed = { ...body };
-        if (isAssignee) {
+        if (isAssignee || isMilestoneAssignee) {
           delete allowed.createdBy;
           delete allowed.createdByName;
           // Normalize multi-assignee -> primary assignedTo
@@ -1875,9 +2195,10 @@ async function handle(request, ctx) {
             allowed.assignedTo = allowed.assignees[0] || allowed.assignedTo || '';
           }
         } else {
-          // Discussion-only target (not an assignee) — limited to status change
+          // Discussion-only target (not an assignee) — limited to status change & milestone resolution
           const minimal = {};
           if (body.status) minimal.status = body.status;
+          if (body.milestones) minimal.milestones = body.milestones;
           Object.assign(allowed, minimal);
         }
         allowed.updatedAt = new Date().toISOString();
@@ -1919,6 +2240,42 @@ async function handle(request, ctx) {
             else if (current.recurrence === 'half-yearly') d.setMonth(d.getMonth() + 6);
             else if (current.recurrence === 'yearly') d.setFullYear(d.getFullYear() + 1);
             next.dueDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+          }
+          // Reset milestones for recurring occurrence
+          if (Array.isArray(current.milestones) && current.milestones.length > 0) {
+            next.milestones = current.milestones.map(m => {
+              const nm = { ...m };
+              nm.id = uuidv4();
+              nm.completed = false;
+              nm.status = 'Pending';
+              nm.completedAt = null;
+              nm.completedBy = null;
+              nm.completedByName = null;
+              nm.needsDiscussion = false;
+              nm.discussionWith = '';
+              nm.discussionNote = '';
+              nm.discussionRaisedAt = null;
+              nm.discussionRaisedBy = null;
+              nm.discussionRaisedByName = null;
+              nm.discussionResolvedAt = null;
+              nm.discussionResolvedBy = null;
+              nm.discussionResolvedByName = null;
+              if (nm.dueDate && current.dueDate) {
+                const md = new Date(nm.dueDate);
+                if (!isNaN(md.getTime())) {
+                  if (current.recurrence === 'daily') md.setDate(md.getDate() + 1);
+                  else if (current.recurrence === 'weekly') md.setDate(md.getDate() + 7);
+                  else if (current.recurrence === 'monthly') md.setMonth(md.getMonth() + 1);
+                  else if (current.recurrence === 'quarterly') md.setMonth(md.getMonth() + 3);
+                  else if (current.recurrence === 'half-yearly') md.setMonth(md.getMonth() + 6);
+                  else if (current.recurrence === 'yearly') md.setFullYear(md.getFullYear() + 1);
+                  nm.dueDate = `${md.getFullYear()}-${String(md.getMonth() + 1).padStart(2, '0')}-${String(md.getDate()).padStart(2, '0')}`;
+                }
+              } else if (next.dueDate) {
+                nm.dueDate = next.dueDate;
+              }
+              return nm;
+            });
           }
           await db.collection('tasks').insertOne(next);
           await db.collection('tasks').updateOne({ id: current.id, orgId: me.activeOrgId }, { $set: { recurrenceSpawned: true } });
@@ -2982,8 +3339,26 @@ async function handle(request, ctx) {
     if (route === 'calendar' && method === 'GET') {
       const from = url.searchParams.get('from'); // ISO date
       const to = url.searchParams.get('to');
-      const filter = me.role === 'staff' ? { orgId: me.activeOrgId, assignedTo: me.id } : { orgId: me.activeOrgId };
+      const filter = me.role === 'staff'
+        ? {
+            orgId: me.activeOrgId,
+            $or: [
+              { assignedTo: me.id },
+              { assignees: me.id },
+              { 'milestones.assignedTo': me.id },
+              { 'milestones.assignees': me.id },
+            ]
+          }
+        : { orgId: me.activeOrgId };
       const tasks = await db.collection('tasks').find({ ...filter, dueDate: { $ne: '', $gte: from || '', $lte: to || '9999' } }).project({ _id: 0 }).toArray();
+      // Backfill tasks for calendar
+      for (const t of tasks) {
+        if (!t.assignees || !Array.isArray(t.assignees) || !t.assignees.length) {
+          t.assignees = t.assignedTo ? [t.assignedTo] : [];
+        }
+        if (!Array.isArray(t.milestones)) t.milestones = [];
+        if (t.isBiggerTask === undefined) t.isBiggerTask = t.milestones.length > 0;
+      }
       const leadFilter = me.role === 'staff' ? { orgId: me.activeOrgId, assignedTo: me.id } : { orgId: me.activeOrgId };
       const leads = await db.collection('leads').find({ ...leadFilter, followUpDate: { $ne: '', $gte: from || '', $lte: to || '9999' } }).project({ _id: 0 }).toArray();
       
@@ -2998,10 +3373,30 @@ async function handle(request, ctx) {
     if (route === 'reminders' && method === 'GET') {
       const today = new Date().toISOString().slice(0, 10);
       const in7 = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
-      const filterStaff = me.role === 'staff' ? { orgId: me.activeOrgId, assignedTo: me.id } : { orgId: me.activeOrgId };
+      const filterStaff = me.role === 'staff'
+        ? {
+            orgId: me.activeOrgId,
+            $or: [
+              { assignedTo: me.id },
+              { assignees: me.id },
+              { 'milestones.assignedTo': me.id },
+              { 'milestones.assignees': me.id },
+            ]
+          }
+        : { orgId: me.activeOrgId };
       const dueToday = await db.collection('tasks').find({ ...filterStaff, status: { $ne: 'Completed' }, dueDate: today }).project({ _id: 0 }).toArray();
       const upcoming = await db.collection('tasks').find({ ...filterStaff, status: { $ne: 'Completed' }, dueDate: { $gt: today, $lte: in7 } }).project({ _id: 0 }).sort({ dueDate: 1 }).toArray();
       const overdue = await db.collection('tasks').find({ ...filterStaff, status: { $ne: 'Completed' }, dueDate: { $ne: '', $lt: today } }).project({ _id: 0 }).sort({ dueDate: 1 }).toArray();
+      
+      // Normalize reminder tasks
+      for (const t of [...dueToday, ...upcoming, ...overdue]) {
+        if (!t.assignees || !Array.isArray(t.assignees) || !t.assignees.length) {
+          t.assignees = t.assignedTo ? [t.assignedTo] : [];
+        }
+        if (!Array.isArray(t.milestones)) t.milestones = [];
+        if (t.isBiggerTask === undefined) t.isBiggerTask = t.milestones.length > 0;
+      }
+
       const followUpsToday = await db.collection('leads').find({ ...filterStaff, status: { $nin: ['Converted', 'Cancelled'] }, followUpDate: today }).project({ _id: 0 }).toArray();
       const followUpsUpcoming = await db.collection('leads').find({ ...filterStaff, status: { $nin: ['Converted', 'Cancelled'] }, followUpDate: { $gt: today, $lte: in7 } }).project({ _id: 0 }).sort({ followUpDate: 1 }).toArray();
       const followUpsOverdue = await db.collection('leads').find({ ...filterStaff, status: { $nin: ['Converted', 'Cancelled'] }, followUpDate: { $ne: '', $lt: today } }).project({ _id: 0 }).sort({ followUpDate: 1 }).toArray();
@@ -3216,7 +3611,15 @@ async function handle(request, ctx) {
       const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).toISOString();
 
       if (me.role === 'staff') {
-        const my = { orgId: me.activeOrgId, assignedTo: me.id };
+        const my = {
+          orgId: me.activeOrgId,
+          $or: [
+            { assignedTo: me.id },
+            { assignees: me.id },
+            { 'milestones.assignedTo': me.id },
+            { 'milestones.assignees': me.id },
+          ]
+        };
         const [allMine, pending, inProg, done] = await Promise.all([
           tasksCol.countDocuments(my),
           tasksCol.countDocuments({ ...my, status: 'Pending' }),
@@ -3230,10 +3633,23 @@ async function handle(request, ctx) {
           ...my, status: { $ne: 'Completed' }, dueDate: { $gte: todayStart, $lt: todayEnd },
         });
         const recent = await tasksCol.find(my).project({ _id: 0 }).sort({ createdAt: -1 }).limit(5).toArray();
-        // Tasks where I raised a discussion that's still pending
+        // Tasks where I raised a discussion that's still pending (either at task level or milestone level)
         const myDiscussionsRaised = await tasksCol.find({
-          orgId: me.activeOrgId, discussionRaisedBy: me.id, needsDiscussion: true,
-        }).project({ _id: 0 }).sort({ discussionRaisedAt: -1 }).limit(10).toArray();
+          orgId: me.activeOrgId,
+          $or: [
+            { discussionRaisedBy: me.id, needsDiscussion: true },
+            { 'milestones.discussionRaisedBy': me.id, 'milestones.needsDiscussion': true },
+          ]
+        }).project({ _id: 0 }).sort({ discussionRaisedAt: -1, createdAt: -1 }).limit(10).toArray();
+
+        for (const t of [...recent, ...myDiscussionsRaised]) {
+          if (!t.assignees || !Array.isArray(t.assignees) || !t.assignees.length) {
+            t.assignees = t.assignedTo ? [t.assignedTo] : [];
+          }
+          if (!Array.isArray(t.milestones)) t.milestones = [];
+          if (t.isBiggerTask === undefined) t.isBiggerTask = t.milestones.length > 0;
+        }
+
         return json({
           role: 'staff',
           stats: { allMine, pending, inProg, done, overdue, dueToday, awaitingDiscussion: myDiscussionsRaised.length },
@@ -3268,20 +3684,42 @@ async function handle(request, ctx) {
         const uRole = orgMembership ? orgMembership.role : 'staff';
         if (uRole === 'admin') continue; // only show performance for non-admin/staff
 
+        const staffFilter = {
+          orgId: me.activeOrgId,
+          $or: [
+            { assignedTo: u.id },
+            { assignees: u.id },
+            { 'milestones.assignedTo': u.id },
+            { 'milestones.assignees': u.id },
+          ]
+        };
+
         const [assigned, done, pending] = await Promise.all([
-          tasksCol.countDocuments({ orgId: me.activeOrgId, assignedTo: u.id }),
-          tasksCol.countDocuments({ orgId: me.activeOrgId, assignedTo: u.id, status: 'Completed' }),
-          tasksCol.countDocuments({ orgId: me.activeOrgId, assignedTo: u.id, status: { $ne: 'Completed' } }),
+          tasksCol.countDocuments(staffFilter),
+          tasksCol.countDocuments({ ...staffFilter, status: 'Completed' }),
+          tasksCol.countDocuments({ ...staffFilter, status: { $ne: 'Completed' } }),
         ]);
         perf.push({ id: u.id, name: u.name, role: uRole, assigned, done, pending });
       }
       const recentLeads = await leadsCol.find({ orgId: me.activeOrgId }).project({ _id: 0 }).sort({ createdAt: -1 }).limit(5).toArray();
       const recentTasks = await tasksCol.find({ orgId: me.activeOrgId }).project({ _id: 0 }).sort({ createdAt: -1 }).limit(5).toArray();
 
-      // Tasks awaiting MY discussion (where discussionWith === me.id AND needsDiscussion)
+      // Tasks awaiting MY discussion (where discussionWith === me.id on task OR milestone)
       const awaitingDiscussion = await tasksCol.find({
-        orgId: me.activeOrgId, needsDiscussion: true, discussionWith: me.id,
-      }).project({ _id: 0 }).sort({ discussionRaisedAt: -1 }).limit(10).toArray();
+        orgId: me.activeOrgId,
+        $or: [
+          { needsDiscussion: true, discussionWith: me.id },
+          { 'milestones.needsDiscussion': true, 'milestones.discussionWith': me.id },
+        ]
+      }).project({ _id: 0 }).sort({ discussionRaisedAt: -1, createdAt: -1 }).limit(10).toArray();
+
+      for (const t of [...recentTasks, ...awaitingDiscussion]) {
+        if (!t.assignees || !Array.isArray(t.assignees) || !t.assignees.length) {
+          t.assignees = t.assignedTo ? [t.assignedTo] : [];
+        }
+        if (!Array.isArray(t.milestones)) t.milestones = [];
+        if (t.isBiggerTask === undefined) t.isBiggerTask = t.milestones.length > 0;
+      }
 
       return json({
         role: me.role,
