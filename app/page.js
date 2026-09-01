@@ -12,6 +12,7 @@ import {
   MessageSquare, Menu, X, ArrowUpDown, ArrowUp, ArrowDown, Send, Loader2,
   Sun, Moon, FilePlus, PlusCircle, MinusCircle, Eye, MapPin, UserCheck, CalendarCheck, CheckSquare, Share2, Filter, User, SlidersHorizontal,
   Layers, Milestone, ChevronDown, ChevronUp, Check, CornerDownRight,
+  Landmark, Gauge, Activity, Percent, CheckCheck, Timer, Award, Building,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -575,6 +576,7 @@ function Shell({ user, onUserUpdated, view, viewParams, setView, onLogout, theme
       { key: 'appointments', label: 'Appointments', icon: CalendarCheck, perm: 'appointments' },
       { key: 'leads', label: 'Leads', icon: Target, perm: 'leads' },
       { key: 'tasks', label: 'Tasks', icon: ListChecks, perm: 'tasks' },
+      { key: 'department', label: 'Department', icon: Landmark, perm: 'department' },
     ];
     if (user.role !== 'staff') {
       all.push({ key: 'clients', label: 'Clients', icon: Building2, perm: 'clients' });
@@ -729,6 +731,7 @@ function Shell({ user, onUserUpdated, view, viewParams, setView, onLogout, theme
           {view === 'appointments' && <AppointmentsView user={user} viewParams={viewParams} setView={setView} />}
           {view === 'leads' && <Leads user={user} viewParams={viewParams} setView={setView} />}
           {view === 'tasks' && <Tasks user={user} viewParams={viewParams} setView={setView} />}
+          {view === 'department' && <DepartmentView user={user} viewParams={viewParams} setView={setView} />}
           {view === 'clients' && <ClientsView user={user} setView={setView} viewParams={viewParams} />}
           {view === 'invoices' && <InvoicesView user={user} viewParams={viewParams} setView={setView} />}
           {view === 'receivables' && <ReceivablesView user={user} setView={setView} />}
@@ -1419,6 +1422,8 @@ function Dashboard({ user, setView, onOpenProfile }) {
 
   if (data.role === 'staff') {
     const s = data.stats;
+    const eff = data.efficiency || { completionRate: 0, onTimeEfficiencyRate: 0, completedOnTime: 0, completedLate: 0, completedTasks: s.done, totalTasks: s.allMine };
+    const dept = data.deptStats || { total: 0, pending: 0, completed: 0, dueToday: 0, dueInTwoDays: 0 };
     const cards = [
       { label: 'My Tasks', value: s.allMine, icon: ListChecks, color: 'bg-indigo-50 text-indigo-600 border border-indigo-100/50', goto: () => setView('tasks', { assignedTo: user.id }) },
       { label: 'Pending', value: s.pending, icon: Clock, color: 'bg-amber-50 text-amber-600 border border-amber-100/50', goto: () => setView('tasks', { status: 'Pending', assignedTo: user.id }) },
@@ -1429,11 +1434,74 @@ function Dashboard({ user, setView, onOpenProfile }) {
     ];
     return (
       <div className="space-y-6">
-        <PageHeader title={`Welcome, ${user.name}`} subtitle="Your tasks at a glance" />
+        <PageHeader title={`Welcome, ${user.name}`} subtitle="Your tasks and efficiency at a glance" />
         <TelegramBanner user={user} onOpenProfile={onOpenProfile} />
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
           {cards.map(c => <StatCard key={c.label} {...c} />)}
         </div>
+
+        {/* Staff Personal Efficiency Marker */}
+        <Card className="border-indigo-100 dark:border-indigo-950/60 bg-gradient-to-br from-white to-indigo-50/30 dark:from-slate-900 dark:to-indigo-950/20">
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <CardTitle className="text-base flex items-center gap-2 text-indigo-950 dark:text-indigo-200">
+                <Gauge className="w-5 h-5 text-indigo-600" /> My Performance & Efficiency Markers
+              </CardTitle>
+              <Badge className="bg-indigo-600 text-white font-semibold">Live Accuracy</Badge>
+            </div>
+            <CardDescription>Real-time tracked turnaround efficiency and on-time completion rates.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="p-3.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 shadow-xs">
+                <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
+                  <span>Overall Completion Rate</span>
+                  <Percent className="w-3.5 h-3.5 text-indigo-500" />
+                </div>
+                <div className="text-2xl font-bold text-slate-900 dark:text-white mb-2">{eff.completionRate}%</div>
+                <div className="w-full bg-slate-100 dark:bg-slate-700 h-2 rounded-full overflow-hidden">
+                  <div className="bg-indigo-600 h-full rounded-full transition-all duration-500" style={{ width: `${Math.min(100, eff.completionRate)}%` }} />
+                </div>
+                <div className="text-[11px] text-slate-500 mt-1.5">{eff.completedTasks} of {eff.totalTasks} total tasks completed</div>
+              </div>
+
+              <div className="p-3.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 shadow-xs">
+                <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
+                  <span>On-Time Efficiency Rate</span>
+                  <Timer className="w-3.5 h-3.5 text-emerald-500" />
+                </div>
+                <div className="text-2xl font-bold text-emerald-600 dark:text-emerald-400 mb-2">{eff.onTimeEfficiencyRate}%</div>
+                <div className="w-full bg-slate-100 dark:bg-slate-700 h-2 rounded-full overflow-hidden">
+                  <div className="bg-emerald-500 h-full rounded-full transition-all duration-500" style={{ width: `${Math.min(100, eff.onTimeEfficiencyRate)}%` }} />
+                </div>
+                <div className="text-[11px] text-slate-500 mt-1.5">{eff.completedOnTime} completed on/before due date</div>
+              </div>
+
+              <div className="p-3.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 shadow-xs">
+                <div className="text-xs text-slate-500 mb-1 flex items-center justify-between">
+                  <span>Completed Late</span>
+                  <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
+                </div>
+                <div className="text-2xl font-bold text-amber-600 dark:text-amber-400">{eff.completedLate}</div>
+                <div className="text-xs text-slate-500 mt-1">Delivered past the scheduled due date</div>
+              </div>
+
+              <div className="p-3.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 shadow-xs cursor-pointer hover:border-indigo-300 transition" onClick={() => setView('department')}>
+                <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
+                  <span>Department Matters</span>
+                  <Landmark className="w-3.5 h-3.5 text-blue-500" />
+                </div>
+                <div className="text-2xl font-bold text-slate-800 dark:text-slate-200">{dept.pending}</div>
+                <div className="text-xs text-slate-500 mt-1 flex items-center gap-1.5">
+                  {dept.dueToday > 0 && <Badge variant="destructive" className="text-[10px] px-1 py-0">{dept.dueToday} due today</Badge>}
+                  {dept.dueInTwoDays > 0 && <Badge variant="outline" className="text-[10px] text-amber-600 border-amber-300 px-1 py-0">{dept.dueInTwoDays} due in 2d</Badge>}
+                  {!dept.dueToday && !dept.dueInTwoDays && <span>{dept.total} assigned matters</span>}
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
         <AwaitingDiscussionWidget
           items={data.awaitingDiscussion || []}
           role="staff"
@@ -1451,10 +1519,136 @@ function Dashboard({ user, setView, onOpenProfile }) {
   }
 
   const l = data.leads, t = data.tasks;
+  const eff = data.efficiency || { completionRate: 0, onTimeEfficiencyRate: 0, completedOnTime: 0, completedLate: 0, completedTasks: t.completed, totalTasks: t.total };
+  const dept = data.deptStats || { total: 0, pending: 0, completed: 0, dueToday: 0, dueInTwoDays: 0, overdue: 0 };
+
+  function exportStaffEfficiencyExcel() {
+    if (!data.staffPerformance || !data.staffPerformance.length) {
+      toast.error('No staff performance data available');
+      return;
+    }
+    const rows = data.staffPerformance.map(s => ({
+      'Staff Name': s.name,
+      'Email': s.email || '-',
+      'Role': s.role ? s.role.toUpperCase() : 'STAFF',
+      'Total Tasks Assigned': s.assigned,
+      'Completed Tasks': s.done,
+      'Pending Tasks': s.pending,
+      'Overdue Tasks': s.overdue || 0,
+      'Completed On-Time': s.completedOnTime || 0,
+      'Completed Late': s.completedLate || 0,
+      'Completion Rate (%)': `${s.completionRate || 0}%`,
+      'On-Time Efficiency Rate (%)': `${s.onTimeEfficiency || 0}%`,
+      'Efficiency Grade': (s.onTimeEfficiency >= 90 ? 'Excellent (A+)' : s.onTimeEfficiency >= 75 ? 'Good (B)' : s.onTimeEfficiency >= 50 ? 'Average (C)' : 'Needs Improvement (D)')
+    }));
+    exportToExcel(rows, `staff_efficiency_analysis_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    toast.success(`Exported efficiency analysis for ${rows.length} staff members`);
+  }
+
   return (
     <div className="space-y-6">
-      <PageHeader title={`Welcome, ${user.name}`} subtitle="Practice overview — click any card or row to drill down" />
+      <PageHeader title={`Welcome, ${user.name}`} subtitle="Practice overview — drill down into performance, department notices, and lead pipelines" />
       <TelegramBanner user={user} onOpenProfile={onOpenProfile} />
+
+      {/* Practice Efficiency Markers Hero Card */}
+      <Card className="border-indigo-100 dark:border-indigo-950/60 bg-gradient-to-r from-indigo-50/50 via-white to-purple-50/40 dark:from-slate-900 dark:via-slate-900 dark:to-indigo-950/30">
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div>
+              <CardTitle className="text-base flex items-center gap-2 text-indigo-950 dark:text-indigo-200">
+                <Gauge className="w-5 h-5 text-indigo-600" /> Overall Organization Efficiency & Turnaround Markers
+              </CardTitle>
+              <CardDescription className="mt-0.5">
+                Automated tracking of task turnaround times, on-time delivery percentages, and staff execution rate.
+              </CardDescription>
+            </div>
+            <Button variant="outline" size="sm" onClick={exportStaffEfficiencyExcel} className="border-indigo-200 hover:bg-indigo-50 text-indigo-700 dark:text-indigo-300">
+              <FileSpreadsheet className="w-4 h-4 mr-1.5 text-emerald-600" />
+              Export Staff Efficiency (Excel)
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {/* Total Completion % */}
+            <div className="p-4 rounded-xl bg-white dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 shadow-xs">
+              <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
+                <span className="font-semibold text-slate-700 dark:text-slate-300">Overall Completion Rate</span>
+                <span className="text-indigo-600 font-bold">{eff.completionRate}%</span>
+              </div>
+              <div className="text-3xl font-extrabold text-slate-900 dark:text-white mb-2">{eff.completionRate}%</div>
+              <div className="w-full bg-slate-100 dark:bg-slate-700 h-2.5 rounded-full overflow-hidden">
+                <div className="bg-indigo-600 h-full rounded-full transition-all duration-500" style={{ width: `${Math.min(100, eff.completionRate)}%` }} />
+              </div>
+              <div className="text-xs text-slate-500 mt-2 flex justify-between">
+                <span>{eff.completedTasks} completed</span>
+                <span>{eff.totalTasks} total</span>
+              </div>
+            </div>
+
+            {/* On-Time Completion Rate % */}
+            <div className="p-4 rounded-xl bg-white dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 shadow-xs">
+              <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
+                <span className="font-semibold text-emerald-800 dark:text-emerald-300">On-Time Efficiency Rate</span>
+                <span className="text-emerald-600 font-bold">{eff.onTimeEfficiencyRate}%</span>
+              </div>
+              <div className="text-3xl font-extrabold text-emerald-600 dark:text-emerald-400 mb-2">{eff.onTimeEfficiencyRate}%</div>
+              <div className="w-full bg-slate-100 dark:bg-slate-700 h-2.5 rounded-full overflow-hidden">
+                <div className="bg-emerald-500 h-full rounded-full transition-all duration-500" style={{ width: `${Math.min(100, eff.onTimeEfficiencyRate)}%` }} />
+              </div>
+              <div className="text-xs text-slate-500 mt-2 flex justify-between">
+                <span className="text-emerald-600 font-medium">✓ {eff.completedOnTime} On-Time</span>
+                <span className="text-amber-600 font-medium">⚠ {eff.completedLate} Late</span>
+              </div>
+            </div>
+
+            {/* Turnaround Health Status */}
+            <div className="p-4 rounded-xl bg-white dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 shadow-xs">
+              <div className="text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1 flex items-center justify-between">
+                <span>Turnaround Quality</span>
+                <Award className="w-4 h-4 text-amber-500" />
+              </div>
+              <div className="text-lg font-bold text-slate-800 dark:text-slate-100 mt-1">
+                {eff.onTimeEfficiencyRate >= 85 ? '🌟 High Efficiency' : eff.onTimeEfficiencyRate >= 65 ? '👍 Steady Flow' : '⚠️ Attention Needed'}
+              </div>
+              <p className="text-xs text-slate-500 mt-1">
+                {eff.completedOnTime} tasks delivered strictly on schedule. {eff.completedLate} completed after deadline.
+              </p>
+            </div>
+
+            {/* Department Quick Widget */}
+            <div
+              className="p-4 rounded-xl bg-white dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 shadow-xs cursor-pointer hover:border-indigo-400 transition"
+              onClick={() => setView('department')}
+            >
+              <div className="flex items-center justify-between text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                <span className="flex items-center gap-1.5"><Landmark className="w-4 h-4 text-blue-600" /> Department Matters</span>
+                <ChevronRight className="w-3.5 h-3.5 text-slate-400" />
+              </div>
+              <div className="flex items-baseline gap-2 mt-1">
+                <div className="text-2xl font-bold text-slate-900 dark:text-white">{dept.pending}</div>
+                <span className="text-xs text-slate-500">active notices / visits</span>
+              </div>
+              <div className="mt-2.5 flex items-center gap-1.5 flex-wrap">
+                {dept.dueToday > 0 ? (
+                  <Badge variant="destructive" className="text-[11px] py-0.5 animate-pulse">
+                    ⏰ {dept.dueToday} Due Today
+                  </Badge>
+                ) : null}
+                {dept.dueInTwoDays > 0 ? (
+                  <Badge variant="outline" className="text-[11px] text-amber-700 border-amber-400 bg-amber-50 py-0.5">
+                    📢 {dept.dueInTwoDays} Due in 2 Days
+                  </Badge>
+                ) : null}
+                {dept.dueToday === 0 && dept.dueInTwoDays === 0 && (
+                  <span className="text-xs text-emerald-600 font-medium">All department replies on track</span>
+                )}
+              </div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
       <div>
         <div className="text-xs font-semibold text-slate-500 dark:text-slate-400 mb-3 flex items-center gap-2 uppercase tracking-wider"><Target className="w-4 h-4" /> LEADS</div>
         <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
@@ -1481,41 +1675,89 @@ function Dashboard({ user, setView, onOpenProfile }) {
         setView={setView}
       />
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle>Staff Performance</CardTitle>
-            {user.role === 'admin' && (
-              <Button size="sm" variant="ghost" onClick={() => setView('users')}>
-                View all <ChevronRight className="w-4 h-4 ml-1" />
+        {/* Comprehensive Staff Efficiency & Performance Table */}
+        <Card className="lg:col-span-2">
+          <CardHeader className="flex flex-row items-center justify-between flex-wrap gap-2">
+            <div>
+              <CardTitle className="text-base flex items-center gap-2">
+                <Users className="w-5 h-5 text-indigo-600" />
+                Staff Performance & Efficiency Analysis
+              </CardTitle>
+              <CardDescription>Individual completion metrics, on-time delivery percentages, and task loads.</CardDescription>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button size="sm" variant="outline" onClick={exportStaffEfficiencyExcel} className="h-8 text-xs">
+                <FileSpreadsheet className="w-3.5 h-3.5 mr-1.5 text-emerald-600" />
+                Export Excel
               </Button>
-            )}
+              {user.role === 'admin' && (
+                <Button size="sm" variant="ghost" onClick={() => setView('users')} className="h-8 text-xs">
+                  Manage Staff <ChevronRight className="w-3.5 h-3.5 ml-1" />
+                </Button>
+              )}
+            </div>
           </CardHeader>
           <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Role</TableHead>
-                  <TableHead className="text-right">Assigned</TableHead>
-                  <TableHead className="text-right">Done</TableHead>
-                  <TableHead className="text-right">Pending</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {data.staffPerformance.map(s => (
-                  <TableRow key={s.id} className="cursor-pointer hover:bg-slate-50" onClick={() => setView('tasks', { assignedTo: s.id })}>
-                    <TableCell className="font-medium text-indigo-600">{s.name}</TableCell>
-                    <TableCell><Badge variant="outline" className="capitalize">{s.role}</Badge></TableCell>
-                    <TableCell className="text-right">{s.assigned}</TableCell>
-                    <TableCell className="text-right text-emerald-600 hover:underline" onClick={(e) => { e.stopPropagation(); setView('tasks', { assignedTo: s.id, status: 'Completed' }); }}>{s.done}</TableCell>
-                    <TableCell className="text-right text-amber-600 hover:underline" onClick={(e) => { e.stopPropagation(); setView('tasks', { assignedTo: s.id, status: 'Pending' }); }}>{s.pending}</TableCell>
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Staff Member</TableHead>
+                    <TableHead>Role</TableHead>
+                    <TableHead className="text-right">Assigned</TableHead>
+                    <TableHead className="text-right">Completed</TableHead>
+                    <TableHead className="text-right">On-Time</TableHead>
+                    <TableHead className="text-right">Late</TableHead>
+                    <TableHead className="text-right">Pending</TableHead>
+                    <TableHead className="text-right">Overdue</TableHead>
+                    <TableHead className="text-center min-w-[130px]">Completion %</TableHead>
+                    <TableHead className="text-center min-w-[130px]">On-Time Rate %</TableHead>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                </TableHeader>
+                <TableBody>
+                  {data.staffPerformance.map(s => (
+                    <TableRow key={s.id} className="cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50" onClick={() => setView('tasks', { assignedTo: s.id })}>
+                      <TableCell className="font-medium text-indigo-600 dark:text-indigo-400">
+                        {s.name}
+                        {s.email && <div className="text-[11px] text-slate-400 font-normal">{s.email}</div>}
+                      </TableCell>
+                      <TableCell><Badge variant="outline" className="capitalize text-xs">{s.role}</Badge></TableCell>
+                      <TableCell className="text-right font-semibold">{s.assigned}</TableCell>
+                      <TableCell className="text-right text-emerald-600 font-semibold hover:underline" onClick={(e) => { e.stopPropagation(); setView('tasks', { assignedTo: s.id, status: 'Completed' }); }}>{s.done}</TableCell>
+                      <TableCell className="text-right text-emerald-700 font-medium">{s.completedOnTime || 0}</TableCell>
+                      <TableCell className="text-right text-amber-600 font-medium">{s.completedLate || 0}</TableCell>
+                      <TableCell className="text-right text-amber-600 hover:underline" onClick={(e) => { e.stopPropagation(); setView('tasks', { assignedTo: s.id, status: 'Pending' }); }}>{s.pending}</TableCell>
+                      <TableCell className="text-right text-red-600 font-semibold">{s.overdue || 0}</TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-2 justify-center">
+                          <div className="w-16 bg-slate-100 dark:bg-slate-700 h-2 rounded-full overflow-hidden">
+                            <div className="bg-indigo-600 h-full rounded-full" style={{ width: `${Math.min(100, s.completionRate || 0)}%` }} />
+                          </div>
+                          <span className="text-xs font-bold text-slate-700 dark:text-slate-300 w-10 text-right">{s.completionRate || 0}%</span>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-2 justify-center">
+                          <div className="w-16 bg-slate-100 dark:bg-slate-700 h-2 rounded-full overflow-hidden">
+                            <div className="bg-emerald-500 h-full rounded-full" style={{ width: `${Math.min(100, s.onTimeEfficiency || 0)}%` }} />
+                          </div>
+                          <span className={`text-xs font-bold w-10 text-right ${(s.onTimeEfficiency || 0) >= 80 ? 'text-emerald-600' : (s.onTimeEfficiency || 0) >= 60 ? 'text-amber-600' : 'text-red-600'}`}>
+                            {s.onTimeEfficiency || 0}%
+                          </span>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  {(!data.staffPerformance || !data.staffPerformance.length) && (
+                    <TableRow><TableCell colSpan={10} className="text-center text-slate-500 py-6">No staff members found.</TableCell></TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </div>
           </CardContent>
         </Card>
-        <Card>
+
+        <Card className="lg:col-span-2">
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle>Recent Activity</CardTitle>
           </CardHeader>
@@ -2998,7 +3240,14 @@ function Tasks({ user, viewParams = {}, setView }) {
                       </TableCell>
                       <TableCell><Badge variant="outline">{t.category}</Badge></TableCell>
                       <TableCell><PriorityBadge priority={t.priority} /></TableCell>
-                      <TableCell><StatusBadge status={t.status} /></TableCell>
+                      <TableCell>
+                        <StatusBadge status={t.status} />
+                        {t.status === 'Completed' && t.completedAt && (
+                          <div className="text-[10px] text-emerald-700 dark:text-emerald-400 mt-0.5" title={`Completed at ${new Date(t.completedAt).toLocaleString()}${t.completedByName ? ' by ' + t.completedByName : ''}`}>
+                            ✓ {new Date(t.completedAt).toLocaleDateString()}
+                          </div>
+                        )}
+                      </TableCell>
                       <TableCell className="text-sm">
                         {t.dueDate ? new Date(t.dueDate).toLocaleDateString() : '-'}
                         {isOverdue(t) && <div className="text-xs text-red-600 dark:text-red-400 font-semibold">OVERDUE</div>}
@@ -3590,6 +3839,12 @@ function TaskDetail({ task, users, currentUser, onClose, onChanged }) {
           <Info label="Assigned To" value={userName(task.assignedTo)} />
           <Info label="Client" value={task.clientName || '-'} />
           <Info label="Created" value={`${new Date(task.createdAt).toLocaleString()}${task.createdByName ? ' by ' + task.createdByName : ''}`} />
+          {task.status === 'Completed' && (
+            <Info
+              label="Completed On"
+              value={task.completedAt ? `${new Date(task.completedAt).toLocaleString()}${task.completedByName ? ` by ${task.completedByName}` : ''}` : 'Marked Completed'}
+            />
+          )}
           {task.recurrence && task.recurrence !== 'none' && <Info label="Recurrence" value={task.recurrence} />}
           {task.discussionRaisedByName && <Info label="Discussion raised by" value={task.discussionRaisedByName} />}
         </div>
@@ -6446,6 +6701,7 @@ const ALL_PERMS = [
   { key: 'appointments', label: 'Appointments' },
   { key: 'leads', label: 'Leads' },
   { key: 'tasks', label: 'Tasks' },
+  { key: 'department', label: 'Department' },
   { key: 'clients', label: 'Clients' },
   { key: 'invoices', label: 'Invoices' },
   { key: 'receivables', label: 'Receivables' },
@@ -8587,6 +8843,1348 @@ function AppointmentFormDialog({ appointmentToEdit, clients = [], users = [], cu
             </Button>
           </DialogFooter>
         </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+
+// =================== DEPARTMENT MODULE ===================
+const DEPARTMENT_LIST = [
+  'Income Tax',
+  'GST / Indirect Taxes',
+  'MCA / RoC',
+  'DGFT',
+  'Customs & Central Excise',
+  'EPF / ESIC',
+  'Local Authorities / Municipal',
+  'RBI / FEMA',
+  'Other Department',
+];
+
+const MATTER_TYPES = [
+  'Notice Reply',
+  'Hearing / Personal Appearance',
+  'Scrutiny / Assessment',
+  'Rectification / Appeal',
+  'Physical Department Visit',
+  'Document Submission',
+  'Summons / Survey',
+  'Refund Follow-up',
+  'Registration / License',
+  'Other Proceeding',
+];
+
+const DEPT_STATUSES = [
+  'Pending',
+  'In Progress',
+  'Awaiting Department Response',
+  'Hearing Scheduled',
+  'Completed',
+  'Closed / Order Passed',
+];
+
+function getDeptBadgeColor(dept) {
+  switch (dept) {
+    case 'Income Tax': return 'bg-blue-100 text-blue-800 border-blue-200 dark:bg-blue-950/80 dark:text-blue-300 dark:border-blue-800';
+    case 'GST / Indirect Taxes': return 'bg-emerald-100 text-emerald-800 border-emerald-200 dark:bg-emerald-950/80 dark:text-emerald-300 dark:border-emerald-800';
+    case 'MCA / RoC': return 'bg-indigo-100 text-indigo-800 border-indigo-200 dark:bg-indigo-950/80 dark:text-indigo-300 dark:border-indigo-800';
+    case 'DGFT': return 'bg-violet-100 text-violet-800 border-violet-200 dark:bg-violet-950/80 dark:text-violet-300 dark:border-violet-800';
+    case 'Customs & Central Excise': return 'bg-amber-100 text-amber-800 border-amber-200 dark:bg-amber-950/80 dark:text-amber-300 dark:border-amber-800';
+    case 'EPF / ESIC': return 'bg-cyan-100 text-cyan-800 border-cyan-200 dark:bg-cyan-950/80 dark:text-cyan-300 dark:border-cyan-800';
+    default: return 'bg-slate-100 text-slate-800 border-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:border-slate-700';
+  }
+}
+
+function DepartmentView({ user, viewParams, setView }) {
+  const { call } = useApi();
+  const [tasks, setTasks] = useState([]);
+  const [users, setUsers] = useState([]);
+  const [clients, setClients] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [checkingReminders, setCheckingReminders] = useState(false);
+
+  // Filters & State
+  const [search, setSearch] = useState('');
+  const [deptFilter, setDeptFilter] = useState(viewParams?.department || 'all');
+  const [statusFilter, setStatusFilter] = useState(viewParams?.status || 'all');
+  const [priorityFilter, setPriorityFilter] = useState('all');
+  const [assigneeFilter, setAssigneeFilter] = useState(viewParams?.assignedTo || 'all');
+  const [quickFilter, setQuickFilter] = useState('all'); // all, due_2_days, due_today, overdue, visits, completed
+
+  const [openForm, setOpenForm] = useState(false);
+  const [editingTask, setEditingTask] = useState(null);
+  const [detailTask, setDetailTask] = useState(null);
+
+  async function loadData() {
+    setLoading(true);
+    try {
+      const [tasksRes, usersRes, clientsRes] = await Promise.all([
+        call('department-tasks'),
+        call('users'),
+        call('clients').catch(() => ({ clients: [] })),
+      ]);
+      setTasks(tasksRes.tasks || []);
+      setUsers(usersRes.users || []);
+      setClients(clientsRes.clients || []);
+    } catch (e) {
+      toast.error(e.message || 'Failed to load department tasks');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  function userName(id) {
+    return users.find(u => u.id === id)?.name || id || '-';
+  }
+
+  async function triggerReminders() {
+    setCheckingReminders(true);
+    try {
+      const res = await call('department-tasks/check-reminders', { method: 'POST' });
+      if (res.sent > 0) {
+        toast.success(`Sent ${res.sent} Telegram reminder(s) for upcoming department due dates!`);
+      } else {
+        toast.info(res.message || 'No pending 2-day or due-date reminders at this moment.');
+      }
+    } catch (e) {
+      toast.error(e.message || 'Failed to check reminders');
+    } finally {
+      setCheckingReminders(false);
+    }
+  }
+
+  async function quickStatusChange(task, newStatus) {
+    try {
+      await call(`department-tasks?id=${task.id}`, {
+        method: 'PUT',
+        body: { status: newStatus },
+      });
+      toast.success(`Task marked as ${newStatus}`);
+      loadData();
+    } catch (e) {
+      toast.error(e.message);
+    }
+  }
+
+  async function deleteTask(id) {
+    if (!confirm('Are you sure you want to delete this department task?')) return;
+    try {
+      await call(`department-tasks?id=${id}`, { method: 'DELETE' });
+      toast.success('Department task deleted');
+      loadData();
+    } catch (e) {
+      toast.error(e.message);
+    }
+  }
+
+  // Filter logic
+  const now = new Date();
+  const todayStr = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  const twoDaysLater = new Date(now.getTime() + 2 * 24 * 60 * 60 * 1000 - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+
+  const filteredTasks = tasks.filter(t => {
+    // Search
+    if (search) {
+      const q = search.toLowerCase();
+      const match =
+        (t.title && t.title.toLowerCase().includes(q)) ||
+        (t.clientName && t.clientName.toLowerCase().includes(q)) ||
+        (t.noticeNo && t.noticeNo.toLowerCase().includes(q)) ||
+        (t.officerName && t.officerName.toLowerCase().includes(q)) ||
+        (t.wardOrCircle && t.wardOrCircle.toLowerCase().includes(q)) ||
+        (t.department && t.department.toLowerCase().includes(q));
+      if (!match) return false;
+    }
+    // Department
+    if (deptFilter !== 'all' && t.department !== deptFilter) return false;
+    // Status
+    if (statusFilter !== 'all' && t.status !== statusFilter) return false;
+    // Priority
+    if (priorityFilter !== 'all' && t.priority !== priorityFilter) return false;
+    // Assignee
+    if (assigneeFilter !== 'all') {
+      const assignees = t.assignees || (t.assignedTo ? [t.assignedTo] : []);
+      if (!assignees.includes(assigneeFilter)) return false;
+    }
+
+    // Quick filter
+    if (quickFilter === 'due_2_days') {
+      if (t.status === 'Completed' || t.status === 'Closed / Order Passed') return false;
+      const targetDate = t.dueDate ? t.dueDate.slice(0, 10) : (t.visitDate ? t.visitDate.slice(0, 10) : '');
+      if (targetDate !== twoDaysLater && targetDate !== todayStr) return false;
+    } else if (quickFilter === 'due_today') {
+      if (t.status === 'Completed' || t.status === 'Closed / Order Passed') return false;
+      const targetDate = t.dueDate ? t.dueDate.slice(0, 10) : (t.visitDate ? t.visitDate.slice(0, 10) : '');
+      if (targetDate !== todayStr) return false;
+    } else if (quickFilter === 'overdue') {
+      if (t.status === 'Completed' || t.status === 'Closed / Order Passed') return false;
+      const targetDate = t.dueDate ? t.dueDate.slice(0, 10) : (t.visitDate ? t.visitDate.slice(0, 10) : '');
+      if (!targetDate || targetDate >= todayStr) return false;
+    } else if (quickFilter === 'visits') {
+      if (!t.visitDate) return false;
+    } else if (quickFilter === 'completed') {
+      if (t.status !== 'Completed' && t.status !== 'Closed / Order Passed') return false;
+    }
+
+    return true;
+  });
+
+  // Summary counts
+  const totalCount = tasks.length;
+  const pendingCount = tasks.filter(t => t.status !== 'Completed' && t.status !== 'Closed / Order Passed').length;
+  const due2DaysCount = tasks.filter(t => {
+    if (t.status === 'Completed' || t.status === 'Closed / Order Passed') return false;
+    const targetDate = t.dueDate ? t.dueDate.slice(0, 10) : (t.visitDate ? t.visitDate.slice(0, 10) : '');
+    return targetDate === twoDaysLater;
+  }).length;
+  const dueTodayCount = tasks.filter(t => {
+    if (t.status === 'Completed' || t.status === 'Closed / Order Passed') return false;
+    const targetDate = t.dueDate ? t.dueDate.slice(0, 10) : (t.visitDate ? t.visitDate.slice(0, 10) : '');
+    return targetDate === todayStr;
+  }).length;
+  const overdueCount = tasks.filter(t => {
+    if (t.status === 'Completed' || t.status === 'Closed / Order Passed') return false;
+    const targetDate = t.dueDate ? t.dueDate.slice(0, 10) : (t.visitDate ? t.visitDate.slice(0, 10) : '');
+    return targetDate && targetDate < todayStr;
+  }).length;
+  const visitsCount = tasks.filter(t => t.visitDate && t.status !== 'Completed' && t.status !== 'Closed / Order Passed').length;
+  const completedCount = tasks.filter(t => t.status === 'Completed' || t.status === 'Closed / Order Passed').length;
+
+  function doExportExcel() {
+    if (!filteredTasks.length) {
+      toast.error('No tasks to export with current filters');
+      return;
+    }
+    const rows = filteredTasks.map(t => {
+      const assignees = (t.assignees && t.assignees.length) ? t.assignees.map(userName).join(', ') : (t.assignedTo ? userName(t.assignedTo) : '-');
+      return {
+        'Matter / Notice Title': t.title,
+        'Department': t.department || '-',
+        'Matter Type': t.matterType || '-',
+        'Notice / DIN No.': t.noticeNo || '-',
+        'Client Name': t.clientName || '-',
+        'Priority': t.priority || 'Medium',
+        'Status': t.status || 'Pending',
+        'Notice Date': t.noticeDate ? new Date(t.noticeDate).toLocaleDateString() : '-',
+        'Reply Due Date': t.dueDate ? new Date(t.dueDate).toLocaleDateString() : '-',
+        'Visit / Hearing Date': t.visitDate ? new Date(t.visitDate).toLocaleDateString() : '-',
+        'Hearing Time': t.visitTime || '-',
+        'Officer Name': t.officerName || '-',
+        'Ward / Circle / Jurisdiction': t.wardOrCircle || '-',
+        'Office Address': t.departmentAddress || '-',
+        'Assigned Staff': assignees,
+        'Telegram Reminders Enabled': t.remindersEnabled !== false ? 'Yes' : 'No',
+        'Completed On': t.completedAt ? new Date(t.completedAt).toLocaleString() : '-',
+        'Completed By': t.completedByName || '-',
+        'Completion Remarks': t.completionRemarks || '-',
+        'Created At': t.createdAt ? new Date(t.createdAt).toLocaleString() : '-',
+        'Created By': t.createdByName || '-',
+      };
+    });
+    exportToExcel(rows, `department_tasks_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    toast.success(`Exported ${rows.length} department tasks to Excel`);
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2.5">
+            <Landmark className="w-6 h-6 text-blue-600 dark:text-blue-400" />
+            Department Assistance & Notice Tracker
+          </h1>
+          <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-1">
+            Track statutory notices, assessment replies, physical hearings/visits, and 2-day automated Telegram reminders.
+          </p>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={triggerReminders}
+            disabled={checkingReminders}
+            className="border-blue-200 text-blue-700 dark:text-blue-300 hover:bg-blue-50"
+            title="Scan database and dispatch instant Telegram notifications for matters due in 2 days or today"
+          >
+            {checkingReminders ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <Bell className="w-4 h-4 mr-1.5 text-blue-600" />}
+            {checkingReminders ? 'Checking...' : 'Check & Send Reminders'}
+          </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={doExportExcel}
+            className="border-emerald-200 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-50"
+          >
+            <FileSpreadsheet className="w-4 h-4 mr-1.5 text-emerald-600" />
+            Export Excel
+          </Button>
+
+          <Button
+            size="sm"
+            onClick={() => { setEditingTask(null); setOpenForm(true); }}
+            className="bg-blue-600 hover:bg-blue-700 text-white"
+          >
+            <Plus className="w-4 h-4 mr-1.5" />
+            New Department Task
+          </Button>
+        </div>
+      </div>
+
+      {/* Metric Cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3.5">
+        <div
+          onClick={() => { setQuickFilter('all'); setStatusFilter('all'); }}
+          className={`p-3.5 rounded-xl border transition-all cursor-pointer ${
+            quickFilter === 'all' && statusFilter === 'all'
+              ? 'bg-blue-50 border-blue-300 dark:bg-blue-950/40 dark:border-blue-800 ring-2 ring-blue-500/20'
+              : 'bg-white border-slate-200 dark:bg-slate-900 dark:border-slate-800 hover:border-slate-300'
+          }`}
+        >
+          <div className="text-xs text-slate-500 flex items-center justify-between">
+            <span>Total Matters</span>
+            <Building className="w-3.5 h-3.5 text-blue-500" />
+          </div>
+          <div className="text-2xl font-bold text-slate-900 dark:text-white mt-1">{totalCount}</div>
+          <div className="text-[11px] text-slate-400 mt-1">All departments</div>
+        </div>
+
+        <div
+          onClick={() => { setQuickFilter('all'); setStatusFilter('Pending'); }}
+          className={`p-3.5 rounded-xl border transition-all cursor-pointer ${
+            statusFilter === 'Pending'
+              ? 'bg-amber-50 border-amber-300 dark:bg-amber-950/40 dark:border-amber-800 ring-2 ring-amber-500/20'
+              : 'bg-white border-slate-200 dark:bg-slate-900 dark:border-slate-800 hover:border-slate-300'
+          }`}
+        >
+          <div className="text-xs text-slate-500 flex items-center justify-between">
+            <span>Pending Replies</span>
+            <Clock className="w-3.5 h-3.5 text-amber-500" />
+          </div>
+          <div className="text-2xl font-bold text-amber-600 dark:text-amber-400 mt-1">{pendingCount}</div>
+          <div className="text-[11px] text-slate-400 mt-1">Under drafting / process</div>
+        </div>
+
+        <div
+          onClick={() => setQuickFilter('due_2_days')}
+          className={`p-3.5 rounded-xl border transition-all cursor-pointer ${
+            quickFilter === 'due_2_days'
+              ? 'bg-indigo-50 border-indigo-300 dark:bg-indigo-950/40 dark:border-indigo-800 ring-2 ring-indigo-500/20'
+              : 'bg-white border-slate-200 dark:bg-slate-900 dark:border-slate-800 hover:border-slate-300'
+          }`}
+        >
+          <div className="text-xs text-slate-500 flex items-center justify-between">
+            <span>⏰ Due in 2 Days</span>
+            <Bell className="w-3.5 h-3.5 text-indigo-500" />
+          </div>
+          <div className="text-2xl font-bold text-indigo-600 dark:text-indigo-400 mt-1">{due2DaysCount}</div>
+          <div className="text-[11px] text-indigo-600 font-medium mt-1">Telegram alert active</div>
+        </div>
+
+        <div
+          onClick={() => setQuickFilter('due_today')}
+          className={`p-3.5 rounded-xl border transition-all cursor-pointer ${
+            quickFilter === 'due_today'
+              ? 'bg-red-50 border-red-300 dark:bg-red-950/40 dark:border-red-800 ring-2 ring-red-500/20'
+              : 'bg-white border-slate-200 dark:bg-slate-900 dark:border-slate-800 hover:border-slate-300'
+          }`}
+        >
+          <div className="text-xs text-slate-500 flex items-center justify-between">
+            <span>🚨 Due Today</span>
+            <AlertTriangle className="w-3.5 h-3.5 text-red-500" />
+          </div>
+          <div className="text-2xl font-bold text-red-600 dark:text-red-400 mt-1">{dueTodayCount + overdueCount}</div>
+          <div className="text-[11px] text-red-600 font-medium mt-1">{overdueCount} overdue</div>
+        </div>
+
+        <div
+          onClick={() => setQuickFilter('visits')}
+          className={`p-3.5 rounded-xl border transition-all cursor-pointer ${
+            quickFilter === 'visits'
+              ? 'bg-purple-50 border-purple-300 dark:bg-purple-950/40 dark:border-purple-800 ring-2 ring-purple-500/20'
+              : 'bg-white border-slate-200 dark:bg-slate-900 dark:border-slate-800 hover:border-slate-300'
+          }`}
+        >
+          <div className="text-xs text-slate-500 flex items-center justify-between">
+            <span>Hearings / Visits</span>
+            <MapPin className="w-3.5 h-3.5 text-purple-500" />
+          </div>
+          <div className="text-2xl font-bold text-purple-600 dark:text-purple-400 mt-1">{visitsCount}</div>
+          <div className="text-[11px] text-slate-400 mt-1">Physical appearance</div>
+        </div>
+
+        <div
+          onClick={() => setQuickFilter('completed')}
+          className={`p-3.5 rounded-xl border transition-all cursor-pointer ${
+            quickFilter === 'completed'
+              ? 'bg-emerald-50 border-emerald-300 dark:bg-emerald-950/40 dark:border-emerald-800 ring-2 ring-emerald-500/20'
+              : 'bg-white border-slate-200 dark:bg-slate-900 dark:border-slate-800 hover:border-slate-300'
+          }`}
+        >
+          <div className="text-xs text-slate-500 flex items-center justify-between">
+            <span>Completed</span>
+            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+          </div>
+          <div className="text-2xl font-bold text-emerald-600 dark:text-emerald-400 mt-1">{completedCount}</div>
+          <div className="text-[11px] text-slate-400 mt-1">Replies filed & closed</div>
+        </div>
+      </div>
+
+      {/* Filter and Search Bar */}
+      <Card>
+        <CardContent className="p-4 space-y-3">
+          <div className="flex flex-col md:flex-row gap-3">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+              <Input
+                placeholder="Search by notice no., client name, officer, ward, DIN, or title..."
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                className="pl-9 text-sm"
+              />
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              <Select value={deptFilter} onValueChange={setDeptFilter}>
+                <SelectTrigger className="text-xs h-9">
+                  <SelectValue placeholder="Department" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Departments</SelectItem>
+                  {DEPARTMENT_LIST.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}
+                </SelectContent>
+              </Select>
+
+              <Select value={statusFilter} onValueChange={setStatusFilter}>
+                <SelectTrigger className="text-xs h-9">
+                  <SelectValue placeholder="Status" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Statuses</SelectItem>
+                  {DEPT_STATUSES.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+                </SelectContent>
+              </Select>
+
+              <Select value={priorityFilter} onValueChange={setPriorityFilter}>
+                <SelectTrigger className="text-xs h-9">
+                  <SelectValue placeholder="Priority" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Priorities</SelectItem>
+                  <SelectItem value="Urgent">Urgent</SelectItem>
+                  <SelectItem value="High">High</SelectItem>
+                  <SelectItem value="Medium">Medium</SelectItem>
+                  <SelectItem value="Low">Low</SelectItem>
+                </SelectContent>
+              </Select>
+
+              <Select value={assigneeFilter} onValueChange={setAssigneeFilter}>
+                <SelectTrigger className="text-xs h-9">
+                  <SelectValue placeholder="Assigned Staff" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Assignees</SelectItem>
+                  {users.map(u => <SelectItem key={u.id} value={u.id}>{u.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          {/* Quick Filter Chips */}
+          <div className="flex items-center gap-1.5 flex-wrap pt-1 border-t border-slate-100 dark:border-slate-800 text-xs">
+            <span className="text-slate-400 font-medium mr-1">Quick View:</span>
+            {[
+              { key: 'all', label: 'All Matters' },
+              { key: 'due_2_days', label: '⏰ Due in 2 Days (Telegram Alert)' },
+              { key: 'due_today', label: '🚨 Due Today / Immediate' },
+              { key: 'overdue', label: '⚠️ Overdue' },
+              { key: 'visits', label: '🏛️ Hearings & Office Visits' },
+              { key: 'completed', label: '✓ Completed Matters' },
+            ].map(chip => (
+              <button
+                key={chip.key}
+                type="button"
+                onClick={() => setQuickFilter(chip.key)}
+                className={`px-2.5 py-1 rounded-full text-xs font-medium transition ${
+                  quickFilter === chip.key
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-slate-100 hover:bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
+                }`}
+              >
+                {chip.label}
+              </button>
+            ))}
+            {(search || deptFilter !== 'all' || statusFilter !== 'all' || priorityFilter !== 'all' || assigneeFilter !== 'all' || quickFilter !== 'all') && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSearch('');
+                  setDeptFilter('all');
+                  setStatusFilter('all');
+                  setPriorityFilter('all');
+                  setAssigneeFilter('all');
+                  setQuickFilter('all');
+                }}
+                className="text-xs text-blue-600 hover:underline ml-auto font-medium"
+              >
+                Reset Filters
+              </button>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Task List / Table */}
+      <Card>
+        <CardHeader className="pb-2 flex flex-row items-center justify-between">
+          <div>
+            <CardTitle className="text-base">Department Matters ({filteredTasks.length})</CardTitle>
+            <CardDescription>Click any row to view full details, add comments, or mark completion.</CardDescription>
+          </div>
+        </CardHeader>
+        <CardContent className="p-0 sm:p-4">
+          {loading ? (
+            <div className="text-center py-12 text-slate-500">
+              <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2 text-blue-600" />
+              Loading department tasks...
+            </div>
+          ) : filteredTasks.length === 0 ? (
+            <div className="text-center py-12 text-slate-500">
+              <Landmark className="w-10 h-10 mx-auto text-slate-300 dark:text-slate-700 mb-2" />
+              <p className="font-semibold text-slate-700 dark:text-slate-300">No department tasks found</p>
+              <p className="text-xs text-slate-400 mt-1">Try changing your filters or add a new department notice.</p>
+              <Button
+                size="sm"
+                onClick={() => { setEditingTask(null); setOpenForm(true); }}
+                className="mt-4 bg-blue-600 hover:bg-blue-700 text-white"
+              >
+                <Plus className="w-4 h-4 mr-1" /> Add Notice / Matter
+              </Button>
+            </div>
+          ) : (
+            <>
+              {/* Desktop Table */}
+              <div className="hidden md:block overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Matter & Client</TableHead>
+                      <TableHead>Department</TableHead>
+                      <TableHead>Matter Type</TableHead>
+                      <TableHead>Reply Due Date</TableHead>
+                      <TableHead>Visit / Hearing</TableHead>
+                      <TableHead>Assigned Staff</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead className="text-right">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {filteredTasks.map(t => {
+                      const isDueToday = t.dueDate && t.dueDate.slice(0, 10) === todayStr;
+                      const isDueInTwoDays = t.dueDate && t.dueDate.slice(0, 10) === twoDaysLater;
+                      const isOverdue = t.dueDate && t.status !== 'Completed' && t.status !== 'Closed / Order Passed' && t.dueDate.slice(0, 10) < todayStr;
+                      const isVisitToday = t.visitDate && t.visitDate.slice(0, 10) === todayStr;
+
+                      return (
+                        <TableRow
+                          key={t.id}
+                          className={`hover:bg-slate-50 dark:hover:bg-slate-800/50 cursor-pointer ${
+                            isOverdue
+                              ? 'bg-red-50/40 dark:bg-red-950/20'
+                              : isDueToday || isVisitToday
+                              ? 'bg-amber-50/40 dark:bg-amber-950/20'
+                              : isDueInTwoDays
+                              ? 'bg-blue-50/30 dark:bg-blue-950/20'
+                              : ''
+                          }`}
+                          onClick={() => setDetailTask(t)}
+                        >
+                          <TableCell>
+                            <div className="font-semibold text-blue-700 dark:text-blue-400 hover:underline">
+                              {t.title}
+                            </div>
+                            <div className="text-xs text-slate-500 flex items-center gap-2 mt-0.5">
+                              {t.clientName && <span>Client: <strong>{t.clientName}</strong></span>}
+                              {t.noticeNo && <span>• DIN/Notice: <code className="text-slate-600 dark:text-slate-300">{t.noticeNo}</code></span>}
+                            </div>
+                            {t.wardOrCircle && (
+                              <div className="text-[11px] text-slate-400 mt-0.5">
+                                {t.officerName ? `${t.officerName} (${t.wardOrCircle})` : t.wardOrCircle}
+                              </div>
+                            )}
+                          </TableCell>
+
+                          <TableCell>
+                            <span className={`inline-block text-[11px] px-2 py-0.5 rounded-full font-semibold border ${getDeptBadgeColor(t.department)}`}>
+                              {t.department || 'Department'}
+                            </span>
+                          </TableCell>
+
+                          <TableCell>
+                            <Badge variant="outline" className="text-xs">{t.matterType || 'Notice'}</Badge>
+                          </TableCell>
+
+                          <TableCell>
+                            {t.dueDate ? (
+                              <div>
+                                <div className={`text-xs font-semibold ${isOverdue ? 'text-red-600' : isDueToday ? 'text-red-600' : isDueInTwoDays ? 'text-indigo-600' : 'text-slate-800 dark:text-slate-200'}`}>
+                                  {new Date(t.dueDate).toLocaleDateString()}
+                                </div>
+                                {isOverdue && <span className="text-[10px] font-bold text-red-600">OVERDUE</span>}
+                                {isDueToday && <span className="text-[10px] font-bold text-red-600">DUE TODAY</span>}
+                                {isDueInTwoDays && <span className="text-[10px] font-bold text-indigo-600">⏰ DUE IN 2 DAYS</span>}
+                              </div>
+                            ) : (
+                              <span className="text-xs text-slate-400">-</span>
+                            )}
+                          </TableCell>
+
+                          <TableCell>
+                            {t.visitDate ? (
+                              <div className="text-xs">
+                                <div className="font-semibold text-purple-700 dark:text-purple-400 flex items-center gap-1">
+                                  <MapPin className="w-3 h-3" />
+                                  {new Date(t.visitDate).toLocaleDateString()}
+                                </div>
+                                {t.visitTime && <div className="text-[11px] text-slate-500">{t.visitTime}</div>}
+                                {isVisitToday && <span className="text-[10px] font-bold text-purple-600">VISIT TODAY</span>}
+                              </div>
+                            ) : (
+                              <span className="text-xs text-slate-400">None</span>
+                            )}
+                          </TableCell>
+
+                          <TableCell className="text-xs">
+                            {(() => {
+                              const ids = (t.assignees && t.assignees.length) ? t.assignees : (t.assignedTo ? [t.assignedTo] : []);
+                              if (!ids.length) return '-';
+                              const names = ids.map(userName);
+                              if (names.length === 1) return names[0];
+                              return (
+                                <span title={names.join(', ')}>
+                                  {names[0]} <Badge variant="outline" className="ml-1 text-[10px]">+{names.length - 1}</Badge>
+                                </span>
+                              );
+                            })()}
+                          </TableCell>
+
+                          <TableCell>
+                            <StatusBadge status={t.status || 'Pending'} />
+                            {t.completedAt && (
+                              <div className="text-[10px] text-emerald-700 dark:text-emerald-400 mt-0.5" title={`Completed on ${new Date(t.completedAt).toLocaleString()}${t.completedByName ? ' by ' + t.completedByName : ''}`}>
+                                ✓ {new Date(t.completedAt).toLocaleDateString()}
+                              </div>
+                            )}
+                          </TableCell>
+
+                          <TableCell className="text-right">
+                            <div className="flex gap-1 justify-end items-center" onClick={e => e.stopPropagation()}>
+                              {t.status !== 'Completed' && t.status !== 'Closed / Order Passed' && (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => quickStatusChange(t, 'Completed')}
+                                  title="Mark as Completed"
+                                  className="text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 h-8 w-8 p-0"
+                                >
+                                  <CheckCircle2 className="w-4 h-4" />
+                                </Button>
+                              )}
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => setDetailTask(t)}
+                                title="View Details & Comments"
+                                className="h-8 w-8 p-0"
+                              >
+                                <Eye className="w-4 h-4 text-slate-600" />
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => { setEditingTask(t); setOpenForm(true); }}
+                                title="Edit Matter"
+                                className="h-8 w-8 p-0"
+                              >
+                                <Edit className="w-4 h-4" />
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => deleteTask(t.id)}
+                                title="Delete Matter"
+                                className="text-red-500 hover:text-red-600 hover:bg-red-50 h-8 w-8 p-0"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+
+              {/* Mobile Cards */}
+              <div className="block md:hidden divide-y divide-slate-200 dark:divide-slate-800">
+                {filteredTasks.map(t => (
+                  <div
+                    key={t.id}
+                    className="p-4 space-y-2 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/40"
+                    onClick={() => setDetailTask(t)}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="font-semibold text-sm text-blue-700 dark:text-blue-400">
+                        {t.title}
+                      </div>
+                      <StatusBadge status={t.status || 'Pending'} />
+                    </div>
+
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className={`text-[11px] px-2 py-0.5 rounded-full font-semibold border ${getDeptBadgeColor(t.department)}`}>
+                        {t.department || 'Department'}
+                      </span>
+                      <Badge variant="outline" className="text-[11px]">{t.matterType || 'Notice'}</Badge>
+                      <PriorityBadge priority={t.priority || 'Medium'} />
+                    </div>
+
+                    {t.clientName && (
+                      <div className="text-xs text-slate-600 dark:text-slate-300">
+                        Client: <strong>{t.clientName}</strong>
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-2 gap-2 text-xs pt-1">
+                      <div>
+                        <span className="text-slate-400">Reply Due:</span>{' '}
+                        <span className="font-semibold">{t.dueDate ? new Date(t.dueDate).toLocaleDateString() : '-'}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400">Visit / Hearing:</span>{' '}
+                        <span className="font-semibold">{t.visitDate ? new Date(t.visitDate).toLocaleDateString() : '-'}</span>
+                      </div>
+                    </div>
+
+                    {t.completedAt && (
+                      <div className="text-[11px] text-emerald-700 font-medium">
+                        ✓ Completed on {new Date(t.completedAt).toLocaleDateString()} {t.completedByName ? `by ${t.completedByName}` : ''}
+                      </div>
+                    )}
+
+                    <div className="flex items-center justify-between pt-2 border-t text-xs text-slate-500" onClick={e => e.stopPropagation()}>
+                      <div>Assigned: {(t.assignees && t.assignees.length) ? t.assignees.map(userName).join(', ') : userName(t.assignedTo)}</div>
+                      <div className="flex gap-1">
+                        <Button size="sm" variant="ghost" onClick={() => { setEditingTask(t); setOpenForm(true); }}>Edit</Button>
+                        <Button size="sm" variant="ghost" onClick={() => deleteTask(t.id)} className="text-red-500">Delete</Button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Form Modal */}
+      {openForm && (
+        <DepartmentTaskForm
+          initial={editingTask}
+          users={users}
+          clients={clients}
+          currentUser={user}
+          onClose={() => setOpenForm(false)}
+          onSaved={() => { setOpenForm(false); loadData(); }}
+        />
+      )}
+
+      {/* Detail Modal */}
+      {detailTask && (
+        <DepartmentTaskDetail
+          task={detailTask}
+          users={users}
+          currentUser={user}
+          onClose={() => setDetailTask(null)}
+          onChanged={async () => {
+            const res = await call(`department-tasks?id=${detailTask.id}`);
+            if (res.task) setDetailTask(res.task);
+            loadData();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function DepartmentTaskForm({ initial, users, clients, currentUser, onClose, onSaved }) {
+  const { call } = useApi();
+  const [saving, setSaving] = useState(false);
+
+  const [f, setF] = useState({
+    id: initial?.id || '',
+    title: initial?.title || '',
+    description: initial?.description || '',
+    department: initial?.department || 'Income Tax',
+    matterType: initial?.matterType || 'Notice Reply',
+    noticeNo: initial?.noticeNo || '',
+    noticeDate: initial?.noticeDate ? initial.noticeDate.slice(0, 10) : '',
+    dueDate: initial?.dueDate ? initial.dueDate.slice(0, 10) : '',
+    visitDate: initial?.visitDate ? initial.visitDate.slice(0, 10) : '',
+    visitTime: initial?.visitTime || '',
+    officerName: initial?.officerName || '',
+    wardOrCircle: initial?.wardOrCircle || '',
+    departmentAddress: initial?.departmentAddress || '',
+    clientId: initial?.clientId || '',
+    clientName: initial?.clientName || '',
+    assignedTo: initial?.assignedTo || currentUser?.id || '',
+    assignees: initial?.assignees || (initial?.assignedTo ? [initial.assignedTo] : [currentUser?.id]),
+    priority: initial?.priority || 'Medium',
+    status: initial?.status || 'Pending',
+    remindersEnabled: initial?.remindersEnabled !== false,
+  });
+
+  function handleClientSelect(clientId) {
+    if (clientId === 'custom') {
+      setF(prev => ({ ...prev, clientId: '', clientName: '' }));
+      return;
+    }
+    const c = clients.find(cl => cl.id === clientId);
+    setF(prev => ({
+      ...prev,
+      clientId: clientId,
+      clientName: c?.name || prev.clientName,
+    }));
+  }
+
+  function toggleAssignee(userId) {
+    setF(prev => {
+      const current = prev.assignees || [];
+      const updated = current.includes(userId)
+        ? current.filter(id => id !== userId)
+        : [...current, userId];
+      return {
+        ...prev,
+        assignees: updated,
+        assignedTo: updated[0] || '',
+      };
+    });
+  }
+
+  function selectMyselfOnly() {
+    setF(prev => ({
+      ...prev,
+      assignees: [currentUser?.id],
+      assignedTo: currentUser?.id,
+    }));
+  }
+
+  function selectAllStaff() {
+    setF(prev => ({
+      ...prev,
+      assignees: users.map(u => u.id),
+      assignedTo: users[0]?.id || currentUser?.id,
+    }));
+  }
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    if (!f.title.trim()) {
+      toast.error('Please enter a matter title or description');
+      return;
+    }
+    setSaving(true);
+    try {
+      if (f.id) {
+        await call(`department-tasks?id=${f.id}`, {
+          method: 'PUT',
+          body: f,
+        });
+        toast.success('Department matter updated successfully');
+      } else {
+        await call('department-tasks', {
+          method: 'POST',
+          body: f,
+        });
+        toast.success('Department matter created with Telegram reminders enabled');
+      }
+      onSaved();
+    } catch (err) {
+      toast.error(err.message || 'Failed to save department task');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent className="max-w-3xl w-[95vw] max-h-[90vh] overflow-y-auto p-4 sm:p-6">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-lg">
+            <Landmark className="w-5 h-5 text-blue-600" />
+            {f.id ? 'Edit Department Matter / Notice' : 'New Department Task / Notice'}
+          </DialogTitle>
+          <DialogDescription>
+            Record statutory notices, reply deadlines, hearing dates, and dispatch automated Telegram reminders.
+          </DialogDescription>
+        </DialogHeader>
+
+        <form onSubmit={handleSubmit} className="space-y-4 pt-2">
+          {/* Title & Client */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="space-y-1.5 sm:col-span-2">
+              <Label className="text-xs font-semibold">Matter / Notice Title *</Label>
+              <Input
+                placeholder="e.g. Income Tax 148A Notice Reply / Scrutiny Assessment AY 2024-25"
+                value={f.title}
+                onChange={e => setF({ ...f, title: e.target.value })}
+                required
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold">Department *</Label>
+              <Select value={f.department} onValueChange={v => setF({ ...f, department: v })}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {DEPARTMENT_LIST.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold">Matter Type</Label>
+              <Select value={f.matterType} onValueChange={v => setF({ ...f, matterType: v })}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {MATTER_TYPES.map(m => <SelectItem key={m} value={m}>{m}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          {/* Notice & DIN info */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3.5 rounded-lg border bg-slate-50/70 dark:bg-slate-900/50">
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold">Notice / DIN / Order No.</Label>
+              <Input
+                placeholder="e.g. ITBA/AST/S/148A/2024/..."
+                value={f.noticeNo}
+                onChange={e => setF({ ...f, noticeNo: e.target.value })}
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold">Notice Issued Date</Label>
+              <Input
+                type="date"
+                value={f.noticeDate}
+                onChange={e => setF({ ...f, noticeDate: e.target.value })}
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold text-red-600 dark:text-red-400">
+                Reply Due Date (Statutory Deadline) *
+              </Label>
+              <Input
+                type="date"
+                value={f.dueDate}
+                onChange={e => setF({ ...f, dueDate: e.target.value })}
+              />
+            </div>
+          </div>
+
+          {/* Hearing & Visit Details */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3.5 rounded-lg border border-purple-200 dark:border-purple-900/60 bg-purple-50/30 dark:bg-purple-950/20">
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold text-purple-900 dark:text-purple-300 flex items-center gap-1">
+                <MapPin className="w-3.5 h-3.5" /> Physical Visit / Hearing Date (if applicable)
+              </Label>
+              <Input
+                type="date"
+                value={f.visitDate}
+                onChange={e => setF({ ...f, visitDate: e.target.value })}
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold text-purple-900 dark:text-purple-300">
+                Hearing / Visit Time
+              </Label>
+              <Input
+                placeholder="e.g. 11:30 AM or 02:00 PM"
+                value={f.visitTime}
+                onChange={e => setF({ ...f, visitTime: e.target.value })}
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold">Assessing Officer / Inspector Name</Label>
+              <Input
+                placeholder="e.g. Shri R. K. Sharma (ITO Ward 3(1))"
+                value={f.officerName}
+                onChange={e => setF({ ...f, officerName: e.target.value })}
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold">Ward / Circle / Jurisdiction</Label>
+              <Input
+                placeholder="e.g. Circle 7(1), Civic Centre, New Delhi"
+                value={f.wardOrCircle}
+                onChange={e => setF({ ...f, wardOrCircle: e.target.value })}
+              />
+            </div>
+
+            <div className="space-y-1.5 sm:col-span-2">
+              <Label className="text-xs font-semibold">Department Building / Office Address</Label>
+              <Input
+                placeholder="e.g. Room 402, Aayakar Bhawan, Vaishali Nagar..."
+                value={f.departmentAddress}
+                onChange={e => setF({ ...f, departmentAddress: e.target.value })}
+              />
+            </div>
+          </div>
+
+          {/* Client & Priority */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold">Select Client</Label>
+              <Select value={f.clientId || 'custom'} onValueChange={handleClientSelect}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Choose client..." />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="custom">-- Custom Client Name --</SelectItem>
+                  {clients.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold">Client Name</Label>
+              <Input
+                placeholder="Client / Company Name"
+                value={f.clientName}
+                onChange={e => setF({ ...f, clientName: e.target.value })}
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold">Priority</Label>
+              <Select value={f.priority} onValueChange={v => setF({ ...f, priority: v })}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Urgent">Urgent (High Penalty/Immediate)</SelectItem>
+                  <SelectItem value="High">High</SelectItem>
+                  <SelectItem value="Medium">Medium</SelectItem>
+                  <SelectItem value="Low">Low</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          {/* Staff Assignees */}
+          <div className="space-y-2 p-3.5 rounded-lg border bg-slate-50/80 dark:bg-slate-900/50">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <div>
+                <Label className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                  <UserCheck className="w-4 h-4 text-blue-600" /> Assigned Staff / Team Members
+                </Label>
+                <p className="text-[11px] text-slate-500">
+                  Assign one or multiple team members to handle drafting, appearances, and submissions.
+                </p>
+              </div>
+              <div className="flex gap-2 text-xs">
+                <button type="button" onClick={selectMyselfOnly} className="text-blue-600 hover:underline">Myself only</button>
+                <span className="text-slate-300">|</span>
+                <button type="button" onClick={selectAllStaff} className="text-blue-600 hover:underline">Select all</button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 max-h-36 overflow-y-auto">
+              {users.map(u => {
+                const isAssigned = (f.assignees || []).includes(u.id);
+                return (
+                  <button
+                    key={u.id}
+                    type="button"
+                    onClick={() => toggleAssignee(u.id)}
+                    className={`p-2 rounded-md border text-left text-xs flex items-center justify-between transition ${
+                      isAssigned
+                        ? 'bg-blue-100/70 border-blue-300 text-blue-900 font-semibold dark:bg-blue-950/80 dark:text-blue-200 dark:border-blue-700'
+                        : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100 dark:bg-slate-900 dark:border-slate-800 dark:text-slate-300'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <div className={`w-3.5 h-3.5 rounded flex items-center justify-center text-[10px] ${
+                        isAssigned ? 'bg-blue-600 text-white' : 'border border-slate-300 bg-white'
+                      }`}>
+                        {isAssigned && '✓'}
+                      </div>
+                      <span className="truncate">{u.name}</span>
+                    </div>
+                    <span className="text-[10px] text-slate-400 capitalize">{u.role}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Telegram Reminder Info Box */}
+          <div className="rounded-lg border border-indigo-200 bg-indigo-50/50 dark:bg-indigo-950/30 p-3 flex items-start gap-3">
+            <Bell className="w-4 h-4 text-indigo-600 mt-0.5 shrink-0" />
+            <div className="text-xs text-indigo-950 dark:text-indigo-200">
+              <strong>Automated 2-Day & Due-Date Telegram Reminders:</strong>
+              <p className="text-[11px] text-indigo-800 dark:text-indigo-300 mt-0.5">
+                The system will automatically notify assigned staff on Telegram exactly 2 days prior to the due date, and again on the due date morning so notice replies or visits are never missed.
+              </p>
+            </div>
+          </div>
+
+          {/* Description / Instructions */}
+          <div className="space-y-1.5">
+            <Label className="text-xs font-semibold">Matter Description / Issues Raised / Action Items</Label>
+            <Textarea
+              placeholder="Specify the key additions/disallowances in the notice, documents to collect from client, arguments to make..."
+              rows={3}
+              value={f.description}
+              onChange={e => setF({ ...f, description: e.target.value })}
+            />
+          </div>
+
+          <DialogFooter className="pt-2 border-t">
+            <Button type="button" variant="outline" onClick={onClose} disabled={saving}>Cancel</Button>
+            <Button type="submit" disabled={saving} className="bg-blue-600 hover:bg-blue-700 text-white">
+              {saving ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+              {saving ? 'Saving...' : f.id ? 'Update Matter' : 'Create Department Matter'}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function DepartmentTaskDetail({ task, users, currentUser, onClose, onChanged }) {
+  const { call } = useApi();
+  const [comment, setComment] = useState('');
+  const [addingComment, setAddingComment] = useState(false);
+  const [completingOpen, setCompletingOpen] = useState(false);
+  const [completionRemarks, setCompletionRemarks] = useState('');
+  const [savingStatus, setSavingStatus] = useState(false);
+
+  function userName(id) { return users.find(u => u.id === id)?.name || id || '-'; }
+
+  async function addComment() {
+    if (!comment.trim()) return;
+    setAddingComment(true);
+    try {
+      const existing = task.comments || [];
+      const newComment = {
+        id: `c_${Date.now()}`,
+        text: comment.trim(),
+        by: currentUser?.name || 'Staff',
+        byId: currentUser?.id,
+        at: new Date().toISOString(),
+      };
+      await call(`department-tasks?id=${task.id}`, {
+        method: 'PUT',
+        body: { comments: [...existing, newComment] },
+      });
+      toast.success('Comment added');
+      setComment('');
+      onChanged();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setAddingComment(false);
+    }
+  }
+
+  async function updateStatus(newStatus) {
+    if (newStatus === 'Completed' || newStatus === 'Closed / Order Passed') {
+      setCompletingOpen(true);
+      return;
+    }
+    setSavingStatus(true);
+    try {
+      await call(`department-tasks?id=${task.id}`, {
+        method: 'PUT',
+        body: { status: newStatus },
+      });
+      toast.success(`Status updated to ${newStatus}`);
+      onChanged();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setSavingStatus(false);
+    }
+  }
+
+  async function handleMarkComplete() {
+    setSavingStatus(true);
+    try {
+      await call(`department-tasks?id=${task.id}`, {
+        method: 'PUT',
+        body: {
+          status: 'Completed',
+          completionRemarks: completionRemarks.trim(),
+        },
+      });
+      toast.success('Department matter marked as Completed with timestamps!');
+      setCompletingOpen(false);
+      onChanged();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setSavingStatus(false);
+    }
+  }
+
+  const assignees = (task.assignees && task.assignees.length) ? task.assignees.map(userName).join(', ') : userName(task.assignedTo);
+
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent className="max-w-3xl w-[95vw] max-h-[90vh] overflow-y-auto p-4 sm:p-6 space-y-4">
+        <DialogHeader>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className={`text-xs px-2.5 py-0.5 rounded-full font-semibold border ${getDeptBadgeColor(task.department)}`}>
+              {task.department || 'Department'}
+            </span>
+            <Badge variant="outline">{task.matterType || 'Notice'}</Badge>
+            <PriorityBadge priority={task.priority || 'Medium'} />
+            <StatusBadge status={task.status || 'Pending'} />
+          </div>
+          <DialogTitle className="text-lg mt-1 text-slate-900 dark:text-slate-100">
+            {task.title}
+          </DialogTitle>
+          <DialogDescription>{task.description || 'No description provided.'}</DialogDescription>
+        </DialogHeader>
+
+        {/* Info Grid */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm p-4 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800">
+          <Info label="Client Name" value={task.clientName || '-'} />
+          <Info label="Notice / DIN No." value={task.noticeNo || '-'} />
+          <Info label="Notice Issued Date" value={task.noticeDate ? new Date(task.noticeDate).toLocaleDateString() : '-'} />
+          <Info label="Reply Due Date" value={task.dueDate ? new Date(task.dueDate).toLocaleDateString() : '-'} />
+          <Info label="Hearing / Visit Date" value={task.visitDate ? `${new Date(task.visitDate).toLocaleDateString()} ${task.visitTime || ''}` : 'None'} />
+          <Info label="Assigned Staff" value={assignees} />
+          <Info label="Officer / Authority" value={task.officerName || '-'} />
+          <Info label="Ward / Circle" value={task.wardOrCircle || '-'} />
+          {task.departmentAddress && <Info label="Office Address" value={task.departmentAddress} />}
+          <Info label="Created On" value={`${new Date(task.createdAt).toLocaleString()}${task.createdByName ? ' by ' + task.createdByName : ''}`} />
+
+          {task.completedAt && (
+            <div className="sm:col-span-2 p-2.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-900 dark:text-emerald-200">
+              <div className="font-semibold text-xs flex items-center gap-1.5">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                Completed on {new Date(task.completedAt).toLocaleString()} {task.completedByName ? `by ${task.completedByName}` : ''}
+              </div>
+              {task.completionRemarks && (
+                <div className="text-xs text-emerald-800 dark:text-emerald-300 mt-1">
+                  <strong>Closing Remarks:</strong> {task.completionRemarks}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Completion Confirmation Dialog */}
+        {completingOpen && (
+          <div className="p-4 rounded-xl border border-emerald-300 bg-emerald-50/70 dark:bg-emerald-950/40 space-y-3">
+            <div className="font-semibold text-emerald-900 dark:text-emerald-200 text-sm flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600" /> Mark Department Matter as Completed
+            </div>
+            <p className="text-xs text-emerald-800 dark:text-emerald-300">
+              This will record the exact timestamp ({new Date().toLocaleDateString()}) and your username for efficiency analysis.
+            </p>
+            <div className="space-y-1">
+              <Label className="text-xs font-semibold text-emerald-900 dark:text-emerald-200">Closing Remarks / Acknowledgement No. (optional)</Label>
+              <Textarea
+                placeholder="e.g. Reply successfully uploaded on ITBA portal with Ack No 19283..."
+                rows={2}
+                value={completionRemarks}
+                onChange={e => setCompletionRemarks(e.target.value)}
+                className="text-xs bg-white"
+              />
+            </div>
+            <div className="flex gap-2 justify-end">
+              <Button type="button" size="sm" variant="outline" onClick={() => setCompletingOpen(false)}>Cancel</Button>
+              <Button type="button" size="sm" onClick={handleMarkComplete} disabled={savingStatus} className="bg-emerald-600 hover:bg-emerald-700 text-white">
+                {savingStatus ? 'Saving...' : 'Confirm Completed'}
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* Status Change Buttons */}
+        <div className="space-y-1.5">
+          <div className="text-xs font-semibold text-slate-600 dark:text-slate-400">Update Matter Status:</div>
+          <div className="flex gap-2 flex-wrap">
+            {DEPT_STATUSES.map(s => (
+              <Button
+                key={s}
+                size="sm"
+                variant={task.status === s ? 'default' : 'outline'}
+                onClick={() => updateStatus(s)}
+                disabled={savingStatus}
+                className="text-xs h-8"
+              >
+                {s}
+              </Button>
+            ))}
+          </div>
+        </div>
+
+        <Separator />
+
+        {/* Comments & Activity Stream */}
+        <div className="space-y-2">
+          <div className="font-semibold text-sm flex items-center justify-between">
+            <span>Comments & Proceeding Notes</span>
+            <span className="text-xs text-slate-400 font-normal">{(task.comments || []).length} note(s)</span>
+          </div>
+
+          <ScrollArea className="h-36 border rounded-md p-3 bg-white dark:bg-slate-900">
+            {(task.comments || []).length === 0 && (
+              <div className="text-xs text-slate-400 text-center py-6">No discussion or notes recorded yet.</div>
+            )}
+            {(task.comments || []).map(c => (
+              <div key={c.id} className="text-xs border-b border-slate-100 dark:border-slate-800 pb-2 mb-2 last:border-0">
+                <div className="text-slate-800 dark:text-slate-200">{c.text}</div>
+                <div className="text-[10px] text-slate-400 mt-0.5">
+                  {c.by} • {new Date(c.at).toLocaleString()}
+                </div>
+              </div>
+            ))}
+          </ScrollArea>
+
+          <div className="flex gap-2">
+            <Input
+              value={comment}
+              onChange={e => setComment(e.target.value)}
+              placeholder="Add hearing notes, submission acknowledgement number, or internal note..."
+              className="text-xs"
+              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); addComment(); } }}
+            />
+            <Button size="sm" onClick={addComment} disabled={addingComment || !comment.trim()}>
+              {addingComment ? 'Adding...' : 'Add Note'}
+            </Button>
+          </div>
+        </div>
       </DialogContent>
     </Dialog>
   );

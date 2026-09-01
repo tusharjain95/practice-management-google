@@ -28,7 +28,10 @@ import {
   sendTestTelegram,
   sendDailyRosterTelegram,
   sendTaskCommentTelegram,
-  sendLeadNoteTelegram
+  sendLeadNoteTelegram,
+  sendDepartmentTaskAssignedTelegram,
+  sendDepartmentReminderTelegram,
+  sendDepartmentCommentTelegram
 } from '@/lib/telegram/client';
 
 export const runtime = 'nodejs';
@@ -2000,6 +2003,9 @@ async function handle(request, ctx) {
         discussionRaisedBy: body.needsDiscussion ? me.id : null,
         discussionRaisedByName: body.needsDiscussion ? me.name : null,
         comments: [],
+        completedAt: (body.status === 'Completed') ? (body.completedAt || new Date().toISOString()) : null,
+        completedBy: (body.status === 'Completed') ? (body.completedBy || me.id) : null,
+        completedByName: (body.status === 'Completed') ? (body.completedByName || me.name) : null,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         createdBy: me.id,
@@ -2111,6 +2117,17 @@ async function handle(request, ctx) {
         body.discussionResolvedBy = me.id;
         body.discussionResolvedByName = me.name;
         body.discussionWith = '';
+      }
+
+      // Track completion timestamp and user
+      if (body.status === 'Completed') {
+        body.completedAt = body.completedAt || existing.completedAt || new Date().toISOString();
+        body.completedBy = body.completedBy || existing.completedBy || me.id;
+        body.completedByName = body.completedByName || existing.completedByName || me.name;
+      } else if (body.status && body.status !== 'Completed') {
+        body.completedAt = null;
+        body.completedBy = null;
+        body.completedByName = null;
       }
 
       // Process milestones if provided
@@ -2370,6 +2387,367 @@ async function handle(request, ctx) {
       const id = route.split('/')[1];
       await db.collection('tasks').deleteOne({ id, orgId: me.activeOrgId });
       logActivity(db, me, 'delete', 'task', id);
+      return json({ ok: true });
+    }
+
+    // -------- DEPARTMENT MODULE (TASKS / MATTERS / NOTICES / VISITS) --------
+    if (route === 'department-tasks' && method === 'GET') {
+      const { page, limit } = getPaginationParams(url.searchParams);
+      const filter = { orgId: me.activeOrgId };
+      const andClauses = [];
+
+      const id = url.searchParams.get('id');
+      if (id) {
+        filter.id = id;
+      } else {
+        const q = url.searchParams.get('q');
+        if (q) {
+          const regex = { $regex: q, $options: 'i' };
+          andClauses.push({
+            $or: [
+              { title: regex },
+              { noticeNo: regex },
+              { clientName: regex },
+              { department: regex },
+              { matterType: regex },
+              { officerDetails: regex },
+              { description: regex }
+            ]
+          });
+        }
+        const department = url.searchParams.get('department');
+        if (department && department !== 'all') filter.department = department;
+
+        const matterType = url.searchParams.get('matterType');
+        if (matterType && matterType !== 'all') filter.matterType = matterType;
+
+        const status = url.searchParams.get('status');
+        if (status && status !== 'all') filter.status = status;
+
+        const priority = url.searchParams.get('priority');
+        if (priority && priority !== 'all') filter.priority = priority;
+
+        const assignedTo = url.searchParams.get('assignedTo');
+        if (assignedTo && assignedTo !== 'all') {
+          andClauses.push({
+            $or: [
+              { assignedTo: assignedTo },
+              { assignees: assignedTo }
+            ]
+          });
+        } else if (me.role === 'staff' && url.searchParams.get('viewAll') !== 'true') {
+          andClauses.push({
+            $or: [
+              { assignedTo: me.id },
+              { assignees: me.id },
+              { createdBy: me.id }
+            ]
+          });
+        }
+
+        const isDueToday = url.searchParams.get('isDueToday');
+        const isDueInTwoDays = url.searchParams.get('isDueInTwoDays');
+        const isOverdue = url.searchParams.get('isOverdue');
+        const now = new Date();
+        const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(now);
+        const twoDaysObj = new Date(now.getTime() + 2 * 24 * 60 * 60 * 1000);
+        const twoDaysStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(twoDaysObj);
+
+        if (isDueToday === 'true') {
+          andClauses.push({
+            status: { $nin: ['Completed', 'Closed'] },
+            $or: [{ dueDate: todayStr }, { visitDate: todayStr }]
+          });
+        } else if (isDueInTwoDays === 'true') {
+          andClauses.push({
+            status: { $nin: ['Completed', 'Closed'] },
+            $or: [{ dueDate: twoDaysStr }, { visitDate: twoDaysStr }]
+          });
+        } else if (isOverdue === 'true') {
+          andClauses.push({
+            status: { $nin: ['Completed', 'Closed'] },
+            $or: [
+              { dueDate: { $ne: '', $lt: todayStr } },
+              { visitDate: { $ne: '', $lt: todayStr } }
+            ]
+          });
+        }
+
+        if (andClauses.length > 0) {
+          filter.$and = andClauses;
+        }
+      }
+
+      const sortField = url.searchParams.get('sortField') || 'dueDate';
+      const sortOrder = url.searchParams.get('sortOrder') === 'desc' ? -1 : 1;
+      const sort = { [sortField]: sortOrder, createdAt: -1 };
+
+      const total = await db.collection('department_tasks').countDocuments(filter);
+      const data = await db.collection('department_tasks')
+        .find(filter)
+        .project({ _id: 0 })
+        .sort(sort)
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .toArray();
+
+      // Aggregate stats
+      const allOrgFilter = { orgId: me.activeOrgId };
+      const now = new Date();
+      const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(now);
+      const twoDaysObj = new Date(now.getTime() + 2 * 24 * 60 * 60 * 1000);
+      const twoDaysStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(twoDaysObj);
+
+      const [totalDeptTasks, pendingDeptTasks, completedDeptTasks, dueTodayCount, dueInTwoDaysCount, overdueCount] = await Promise.all([
+        db.collection('department_tasks').countDocuments(allOrgFilter),
+        db.collection('department_tasks').countDocuments({ ...allOrgFilter, status: { $nin: ['Completed', 'Closed'] } }),
+        db.collection('department_tasks').countDocuments({ ...allOrgFilter, status: { $in: ['Completed', 'Closed'] } }),
+        db.collection('department_tasks').countDocuments({
+          ...allOrgFilter,
+          status: { $nin: ['Completed', 'Closed'] },
+          $or: [{ dueDate: todayStr }, { visitDate: todayStr }]
+        }),
+        db.collection('department_tasks').countDocuments({
+          ...allOrgFilter,
+          status: { $nin: ['Completed', 'Closed'] },
+          $or: [{ dueDate: twoDaysStr }, { visitDate: twoDaysStr }]
+        }),
+        db.collection('department_tasks').countDocuments({
+          ...allOrgFilter,
+          status: { $nin: ['Completed', 'Closed'] },
+          $or: [
+            { dueDate: { $ne: '', $lt: todayStr } },
+            { visitDate: { $ne: '', $lt: todayStr } }
+          ]
+        })
+      ]);
+
+      return json({
+        tasks: data,
+        data,
+        total,
+        page,
+        limit,
+        hasMore: total > page * limit,
+        stats: {
+          total: totalDeptTasks,
+          pending: pendingDeptTasks,
+          completed: completedDeptTasks,
+          dueToday: dueTodayCount,
+          dueInTwoDays: dueInTwoDaysCount,
+          overdue: overdueCount
+        }
+      });
+    }
+
+    if (route === 'department-tasks' && method === 'POST') {
+      const body = await request.json();
+      if (!body.department || (!body.title && !body.matterType)) {
+        return json({ error: 'Department and Title/Matter are required' }, 400);
+      }
+      const assignees = Array.isArray(body.assignees) && body.assignees.length ? body.assignees : (body.assignedTo ? [body.assignedTo] : [me.id]);
+      const isCompleted = body.status === 'Completed' || body.status === 'Closed';
+
+      const task = {
+        id: uuidv4(),
+        orgId: me.activeOrgId,
+        department: body.department || 'Income Tax',
+        matterType: body.matterType || 'Notice Reply',
+        title: body.title || `${body.department} - ${body.matterType || 'Matter'} (${body.clientName || 'General'})`,
+        noticeNo: body.noticeNo || '',
+        noticeDate: body.noticeDate || '',
+        dueDate: body.dueDate || '',
+        visitDate: body.visitDate || '',
+        officerDetails: body.officerDetails || '',
+        clientId: body.clientId || '',
+        clientName: body.clientName || '',
+        priority: body.priority || 'Medium',
+        status: body.status || 'Pending',
+        description: body.description || '',
+        assignedTo: assignees[0] || me.id,
+        assignees,
+        comments: [],
+        remindersSent: [],
+        completedAt: isCompleted ? (body.completedAt || new Date().toISOString()) : null,
+        completedBy: isCompleted ? (body.completedBy || me.id) : null,
+        completedByName: isCompleted ? (body.completedByName || me.name) : null,
+        completionRemarks: body.completionRemarks || '',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        createdBy: me.id,
+        createdByName: me.name
+      };
+
+      await db.collection('department_tasks').insertOne(task);
+      logActivity(db, me, 'create', 'department_task', task.id, { title: task.title, department: task.department });
+
+      // Trigger Telegram assign notification
+      try {
+        if (assignees && assignees.length) {
+          for (const uId of assignees) {
+            db.collection('users').findOne({ id: uId }).then(targetUser => {
+              if (targetUser) {
+                sendDepartmentTaskAssignedTelegram(db, targetUser, task).catch(err => {
+                  console.error('[Telegram Dept Task Error]', err);
+                });
+              }
+            }).catch(err => console.error('[Telegram Dept User Error]', err));
+          }
+        }
+      } catch (e) {
+        console.error('[Telegram Dept Task Dispatch Error]', e);
+      }
+
+      const { _id, ...safe } = task;
+      return json({ task: safe });
+    }
+
+    if (route === 'department-tasks/check-reminders' && method === 'POST') {
+      const now = new Date();
+      const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(now);
+      const twoDaysObj = new Date(now.getTime() + 2 * 24 * 60 * 60 * 1000);
+      const twoDaysLaterStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(twoDaysObj);
+
+      const activeTasks = await db.collection('department_tasks').find({
+        orgId: me.activeOrgId,
+        status: { $nin: ['Completed', 'Closed'] },
+        $or: [
+          { dueDate: todayStr },
+          { visitDate: todayStr },
+          { dueDate: twoDaysLaterStr },
+          { visitDate: twoDaysLaterStr }
+        ]
+      }).toArray();
+
+      const results = [];
+      let sentCount = 0;
+
+      for (const task of activeTasks) {
+        const remindersSent = Array.isArray(task.remindersSent) ? task.remindersSent : [];
+        const isDueToday = task.dueDate === todayStr || task.visitDate === todayStr;
+        const isDueInTwoDays = task.dueDate === twoDaysLaterStr || task.visitDate === twoDaysLaterStr;
+
+        let reminderType = null;
+        let reminderKey = '';
+
+        if (isDueToday) {
+          reminderType = 'due_today';
+          reminderKey = `due_today_${todayStr}`;
+        } else if (isDueInTwoDays) {
+          reminderType = 'two_days_prior';
+          reminderKey = `two_days_prior_${todayStr}`;
+        }
+
+        if (reminderType && !remindersSent.some(r => r.key === reminderKey || (r.type === reminderType && r.date === todayStr))) {
+          const assignees = Array.isArray(task.assignees) && task.assignees.length ? task.assignees : (task.assignedTo ? [task.assignedTo] : []);
+          const targetUsers = await db.collection('users').find({ id: { $in: assignees } }).toArray();
+
+          for (const targetUser of targetUsers) {
+            try {
+              await sendDepartmentReminderTelegram(db, targetUser, task, reminderType);
+              sentCount++;
+            } catch (err) {
+              console.error('[Telegram Dept Reminder Error]', err);
+            }
+          }
+
+          const newReminderEntry = {
+            key: reminderKey,
+            type: reminderType,
+            date: todayStr,
+            at: new Date().toISOString(),
+            sentCount: targetUsers.length
+          };
+
+          await db.collection('department_tasks').updateOne(
+            { id: task.id },
+            { $push: { remindersSent: newReminderEntry } }
+          );
+
+          results.push({
+            taskId: task.id,
+            title: task.title,
+            department: task.department,
+            reminderType,
+            recipientCount: targetUsers.length
+          });
+        }
+      }
+
+      return json({
+        ok: true,
+        todayStr,
+        twoDaysLaterStr,
+        activeTasksChecked: activeTasks.length,
+        remindersSentCount: sentCount,
+        dispatched: results
+      });
+    }
+
+    if (route.startsWith('department-tasks/') && method === 'PUT') {
+      const id = route.split('/')[1];
+      const sub = route.split('/')[2];
+      if (sub === 'comments') {
+        const { comment } = await request.json();
+        const entry = { id: uuidv4(), text: comment, by: me.name, byId: me.id, at: new Date().toISOString() };
+        await db.collection('department_tasks').updateOne({ id, orgId: me.activeOrgId }, { $push: { comments: entry }, $set: { updatedAt: new Date().toISOString() } });
+
+        // Notify team via Telegram
+        try {
+          const existing = await db.collection('department_tasks').findOne({ id, orgId: me.activeOrgId });
+          if (existing) {
+            const notifyUserIds = new Set();
+            if (existing.assignedTo) notifyUserIds.add(existing.assignedTo);
+            if (Array.isArray(existing.assignees)) existing.assignees.forEach(aid => aid && notifyUserIds.add(aid));
+            if (existing.createdBy) notifyUserIds.add(existing.createdBy);
+            notifyUserIds.delete(me.id);
+
+            if (notifyUserIds.size > 0) {
+              db.collection('users').find({ id: { $in: Array.from(notifyUserIds) } }).toArray().then(usersToNotify => {
+                usersToNotify.forEach(userToNotify => {
+                  sendDepartmentCommentTelegram(db, userToNotify, existing, entry, me.name).catch(err => console.error(err));
+                });
+              });
+            }
+          }
+        } catch (e) {
+          console.error('[Department Comment Notification Error]', e);
+        }
+
+        return json({ ok: true, comment: entry });
+      }
+
+      const body = await request.json();
+      const existing = await db.collection('department_tasks').findOne({ id, orgId: me.activeOrgId });
+      if (!existing) return json({ error: 'Not found' }, 404);
+
+      if (body.status === 'Completed' || body.status === 'Closed') {
+        body.completedAt = body.completedAt || existing.completedAt || new Date().toISOString();
+        body.completedBy = body.completedBy || existing.completedBy || me.id;
+        body.completedByName = body.completedByName || existing.completedByName || me.name;
+      } else if (body.status && body.status !== 'Completed' && body.status !== 'Closed') {
+        body.completedAt = null;
+        body.completedBy = null;
+        body.completedByName = null;
+      }
+
+      if (Array.isArray(body.assignees)) {
+        body.assignees = body.assignees.filter(Boolean);
+        body.assignedTo = body.assignees[0] || body.assignedTo || '';
+      }
+
+      body.updatedAt = new Date().toISOString();
+      await db.collection('department_tasks').updateOne({ id, orgId: me.activeOrgId }, { $set: body });
+      logActivity(db, me, 'update', 'department_task', id, body);
+
+      return json({ ok: true });
+    }
+
+    if (route.startsWith('department-tasks/') && method === 'DELETE') {
+      if (me.role === 'staff') return json({ error: 'Forbidden' }, 403);
+      const id = route.split('/')[1];
+      await db.collection('department_tasks').deleteOne({ id, orgId: me.activeOrgId });
+      logActivity(db, me, 'delete', 'department_task', id);
       return json({ ok: true });
     }
 
@@ -3606,9 +3984,13 @@ async function handle(request, ctx) {
     if (route === 'dashboard' && method === 'GET') {
       const leadsCol = db.collection('leads');
       const tasksCol = db.collection('tasks');
+      const deptCol = db.collection('department_tasks');
       const now = new Date();
       const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
       const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).toISOString();
+      const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(now);
+      const twoDaysObj = new Date(now.getTime() + 2 * 24 * 60 * 60 * 1000);
+      const twoDaysStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(twoDaysObj);
 
       if (me.role === 'staff') {
         const my = {
@@ -3632,6 +4014,27 @@ async function handle(request, ctx) {
         const dueToday = await tasksCol.countDocuments({
           ...my, status: { $ne: 'Completed' }, dueDate: { $gte: todayStart, $lt: todayEnd },
         });
+
+        // Compute staff personal efficiency metrics
+        const myCompletedTasksList = await tasksCol.find({ ...my, status: 'Completed' }).project({ dueDate: 1, completedAt: 1, updatedAt: 1 }).toArray();
+        const myOnTimeCount = myCompletedTasksList.filter(t => !t.dueDate || (t.completedAt && t.completedAt.slice(0, 10) <= t.dueDate.slice(0, 10)) || (!t.completedAt && t.updatedAt && t.updatedAt.slice(0, 10) <= t.dueDate.slice(0, 10))).length;
+        const myLateCount = Math.max(0, done - myOnTimeCount);
+        const myCompletionRate = allMine > 0 ? Math.round((done / allMine) * 1000) / 10 : 0;
+        const myOnTimeEfficiencyRate = done > 0 ? Math.round((myOnTimeCount / done) * 1000) / 10 : 0;
+
+        // Department tasks for this staff
+        const myDeptFilter = {
+          orgId: me.activeOrgId,
+          $or: [{ assignedTo: me.id }, { assignees: me.id }, { createdBy: me.id }]
+        };
+        const [myDeptTotal, myDeptPending, myDeptCompleted, myDeptDueToday, myDeptDueIn2Days] = await Promise.all([
+          deptCol.countDocuments(myDeptFilter),
+          deptCol.countDocuments({ ...myDeptFilter, status: { $nin: ['Completed', 'Closed'] } }),
+          deptCol.countDocuments({ ...myDeptFilter, status: { $in: ['Completed', 'Closed'] } }),
+          deptCol.countDocuments({ ...myDeptFilter, status: { $nin: ['Completed', 'Closed'] }, $or: [{ dueDate: todayStr }, { visitDate: todayStr }] }),
+          deptCol.countDocuments({ ...myDeptFilter, status: { $nin: ['Completed', 'Closed'] }, $or: [{ dueDate: twoDaysStr }, { visitDate: twoDaysStr }] })
+        ]);
+
         const recent = await tasksCol.find(my).project({ _id: 0 }).sort({ createdAt: -1 }).limit(5).toArray();
         // Tasks where I raised a discussion that's still pending (either at task level or milestone level)
         const myDiscussionsRaised = await tasksCol.find({
@@ -3653,6 +4056,21 @@ async function handle(request, ctx) {
         return json({
           role: 'staff',
           stats: { allMine, pending, inProg, done, overdue, dueToday, awaitingDiscussion: myDiscussionsRaised.length },
+          efficiency: {
+            totalTasks: allMine,
+            completedTasks: done,
+            completionRate: myCompletionRate,
+            completedOnTime: myOnTimeCount,
+            completedLate: myLateCount,
+            onTimeEfficiencyRate: myOnTimeEfficiencyRate
+          },
+          deptStats: {
+            total: myDeptTotal,
+            pending: myDeptPending,
+            completed: myDeptCompleted,
+            dueToday: myDeptDueToday,
+            dueInTwoDays: myDeptDueIn2Days
+          },
           recentTasks: recent,
           awaitingDiscussion: myDiscussionsRaised,
         });
@@ -3675,14 +4093,30 @@ async function handle(request, ctx) {
         orgId: me.activeOrgId, status: { $ne: 'Completed' }, dueDate: { $ne: '', $lt: todayStart },
       });
 
-      // Staff perf
+      // Overall Organization Task Efficiency
+      const allCompletedTasks = await tasksCol.find({ orgId: me.activeOrgId, status: 'Completed' }).project({ dueDate: 1, completedAt: 1, updatedAt: 1 }).toArray();
+      const onTimeCompletedTotal = allCompletedTasks.filter(t => !t.dueDate || (t.completedAt && t.completedAt.slice(0, 10) <= t.dueDate.slice(0, 10)) || (!t.completedAt && t.updatedAt && t.updatedAt.slice(0, 10) <= t.dueDate.slice(0, 10))).length;
+      const lateCompletedTotal = Math.max(0, doneTasks - onTimeCompletedTotal);
+      const orgCompletionRate = totalTasks > 0 ? Math.round((doneTasks / totalTasks) * 1000) / 10 : 0;
+      const orgOnTimeEfficiencyRate = doneTasks > 0 ? Math.round((onTimeCompletedTotal / doneTasks) * 1000) / 10 : 0;
+
+      // Department Tasks Overview
+      const allDeptFilter = { orgId: me.activeOrgId };
+      const [totalDeptTasks, pendingDeptTasks, completedDeptTasks, dueTodayDeptCount, dueIn2DaysDeptCount, overdueDeptCount] = await Promise.all([
+        deptCol.countDocuments(allDeptFilter),
+        deptCol.countDocuments({ ...allDeptFilter, status: { $nin: ['Completed', 'Closed'] } }),
+        deptCol.countDocuments({ ...allDeptFilter, status: { $in: ['Completed', 'Closed'] } }),
+        deptCol.countDocuments({ ...allDeptFilter, status: { $nin: ['Completed', 'Closed'] }, $or: [{ dueDate: todayStr }, { visitDate: todayStr }] }),
+        deptCol.countDocuments({ ...allDeptFilter, status: { $nin: ['Completed', 'Closed'] }, $or: [{ dueDate: twoDaysStr }, { visitDate: twoDaysStr }] }),
+        deptCol.countDocuments({ ...allDeptFilter, status: { $nin: ['Completed', 'Closed'] }, $or: [{ dueDate: { $ne: '', $lt: todayStr } }, { visitDate: { $ne: '', $lt: todayStr } }] })
+      ]);
+
+      // Staff Performance & Efficiency analysis for every user
       const users = await db.collection('users').find({ "orgs.orgId": me.activeOrgId }).project({ _id: 0, passwordHash: 0 }).toArray();
       const perf = [];
       for (const u of users) {
-        // Find role in this org specifically
         const orgMembership = (u.orgs || []).find(o => o.orgId === me.activeOrgId);
-        const uRole = orgMembership ? orgMembership.role : 'staff';
-        if (uRole === 'admin') continue; // only show performance for non-admin/staff
+        const uRole = orgMembership ? orgMembership.role : (u.role || 'staff');
 
         const staffFilter = {
           orgId: me.activeOrgId,
@@ -3694,13 +4128,35 @@ async function handle(request, ctx) {
           ]
         };
 
-        const [assigned, done, pending] = await Promise.all([
+        const [assigned, done, pending, uOverdue] = await Promise.all([
           tasksCol.countDocuments(staffFilter),
           tasksCol.countDocuments({ ...staffFilter, status: 'Completed' }),
           tasksCol.countDocuments({ ...staffFilter, status: { $ne: 'Completed' } }),
+          tasksCol.countDocuments({ ...staffFilter, status: { $ne: 'Completed' }, dueDate: { $ne: '', $lt: todayStart } })
         ]);
-        perf.push({ id: u.id, name: u.name, role: uRole, assigned, done, pending });
+
+        const uCompletedList = await tasksCol.find({ ...staffFilter, status: 'Completed' }).project({ dueDate: 1, completedAt: 1, updatedAt: 1 }).toArray();
+        const uOnTime = uCompletedList.filter(t => !t.dueDate || (t.completedAt && t.completedAt.slice(0, 10) <= t.dueDate.slice(0, 10)) || (!t.completedAt && t.updatedAt && t.updatedAt.slice(0, 10) <= t.dueDate.slice(0, 10))).length;
+        const uLate = Math.max(0, done - uOnTime);
+        const uCompletionRate = assigned > 0 ? Math.round((done / assigned) * 1000) / 10 : 0;
+        const uOnTimeEfficiency = done > 0 ? Math.round((uOnTime / done) * 1000) / 10 : 0;
+
+        perf.push({
+          id: u.id,
+          name: u.name,
+          email: u.email || '',
+          role: uRole,
+          assigned,
+          done,
+          pending,
+          overdue: uOverdue,
+          completedOnTime: uOnTime,
+          completedLate: uLate,
+          completionRate: uCompletionRate,
+          onTimeEfficiency: uOnTimeEfficiency
+        });
       }
+
       const recentLeads = await leadsCol.find({ orgId: me.activeOrgId }).project({ _id: 0 }).sort({ createdAt: -1 }).limit(5).toArray();
       const recentTasks = await tasksCol.find({ orgId: me.activeOrgId }).project({ _id: 0 }).sort({ createdAt: -1 }).limit(5).toArray();
 
@@ -3725,6 +4181,22 @@ async function handle(request, ctx) {
         role: me.role,
         leads: { total: totalLeads, new: newLeads, inProgress, converted, cancelled },
         tasks: { total: totalTasks, pending: pendingTasks, inProgress: inProgTasks, completed: doneTasks, overdue: overdueTasks, awaitingDiscussion: awaitingDiscussion.length },
+        efficiency: {
+          totalTasks,
+          completedTasks: doneTasks,
+          completionRate: orgCompletionRate,
+          completedOnTime: onTimeCompletedTotal,
+          completedLate: lateCompletedTotal,
+          onTimeEfficiencyRate: orgOnTimeEfficiencyRate
+        },
+        deptStats: {
+          total: totalDeptTasks,
+          pending: pendingDeptTasks,
+          completed: completedDeptTasks,
+          dueToday: dueTodayDeptCount,
+          dueInTwoDays: dueIn2DaysDeptCount,
+          overdue: overdueDeptCount
+        },
         staffPerformance: perf,
         recentLeads,
         recentTasks,
