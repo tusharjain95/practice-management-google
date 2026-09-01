@@ -8946,10 +8946,12 @@ function DepartmentView({ user, viewParams, setView }) {
     setCheckingReminders(true);
     try {
       const res = await call('department-tasks/check-reminders', { method: 'POST' });
-      if (res.sent > 0) {
-        toast.success(`Sent ${res.sent} Telegram reminder(s) for upcoming department due dates!`);
+      const count = res.remindersSentCount ?? res.sentCount ?? 0;
+      if (count > 0) {
+        toast.success(`Dispatched ${count} Telegram reminder(s) for upcoming department due dates!`);
+        loadData();
       } else {
-        toast.info(res.message || 'No pending 2-day or due-date reminders at this moment.');
+        toast.info('All automated reminders are already up to date for today. No new reminders needed.');
       }
     } catch (e) {
       toast.error(e.message || 'Failed to check reminders');
@@ -9099,8 +9101,12 @@ function DepartmentView({ user, viewParams, setView }) {
             <Landmark className="w-6 h-6 text-blue-600 dark:text-blue-400" />
             Department Assistance & Notice Tracker
           </h1>
-          <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-1">
-            Track statutory notices, assessment replies, physical hearings/visits, and 2-day automated Telegram reminders.
+          <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-1 flex items-center gap-2 flex-wrap">
+            <span>Track statutory notices, assessment replies, physical hearings/visits.</span>
+            <span className="inline-flex items-center gap-1 text-[11px] font-medium bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 px-2 py-0.5 rounded-full border border-emerald-200 dark:border-emerald-800">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+              Automated 2-Day & Due-Date Reminders Active
+            </span>
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
@@ -9110,10 +9116,10 @@ function DepartmentView({ user, viewParams, setView }) {
             onClick={triggerReminders}
             disabled={checkingReminders}
             className="border-blue-200 text-blue-700 dark:text-blue-300 hover:bg-blue-50"
-            title="Scan database and dispatch instant Telegram notifications for matters due in 2 days or today"
+            title="Automated daily at 9:00 AM IST & on loading tasks. Click here to trigger an immediate on-demand check."
           >
             {checkingReminders ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <Bell className="w-4 h-4 mr-1.5 text-blue-600" />}
-            {checkingReminders ? 'Checking...' : 'Check & Send Reminders'}
+            {checkingReminders ? 'Checking...' : 'Run Reminder Check'}
           </Button>
 
           <Button

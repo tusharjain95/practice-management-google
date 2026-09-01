@@ -651,10 +651,11 @@ All endpoints prefixed with `/api/` and require `Authorization: Bearer <JWT>` ex
 | POST | `/api/backup/import` | Restore database collections from a JSON backup file (admin only) |
 | POST | `/api/backup/clear-old-data` | Purge historical data on/before a selected date for specific categories (admin only) |
 
-### WhatsApp & Automation
+### Telegram, WhatsApp & Automation Crons
 | Method | Endpoint | Description |
 |---|---|---|
 | GET/POST | `/api/cron/daily-whatsapp-roster` | Scheduled cron job to deliver Daily PDF task rosters (secured via CRON_SECRET) |
+| GET/POST | `/api/cron/department-reminders` | Automatic daily cron job dispatching Telegram 2-day & due-date reminders for statutory department matters |
 | GET | `/api/whatsapp/pdf-roster?token=<JWT>` | Secured dynamic PDF task roster endpoint (expires in 24 hours) |
 | POST | `/api/whatsapp/test` | Trigger a test WhatsApp notification to a selected or manual recipient (admin only) |
 | GET | `/api/whatsapp/logs` | List WhatsApp logs with pagination, status, and message IDs (admin/manager only) |

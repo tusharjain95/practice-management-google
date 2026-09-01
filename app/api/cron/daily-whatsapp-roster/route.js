@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import jwt from 'jsonwebtoken';
 import { sendDailyRosterPdfWhatsApp } from '@/lib/whatsapp/client';
-import { sendDailyRosterTelegram } from '@/lib/telegram/client';
+import { sendDailyRosterTelegram, processDepartmentReminders } from '@/lib/telegram/client';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret';
 const APP_BASE_URL = process.env.APP_BASE_URL || 'http://localhost:3000';
@@ -143,10 +143,19 @@ async function handleCron(request) {
       }
     }
 
+    // Automatically process department 2-day & due-date Telegram reminders as well
+    let deptRemindersReport = null;
+    try {
+      deptRemindersReport = await processDepartmentReminders(db, null);
+    } catch (deptErr) {
+      console.error('[Cron Error] Department reminders auto-dispatch failed:', deptErr);
+    }
+
     return NextResponse.json({
       message: 'Daily roster process complete.',
       processedCount: users.length,
       results,
+      deptRemindersReport,
       date: dateStr,
       yesterday: yesterdayStr
     });

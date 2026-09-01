@@ -31,7 +31,8 @@ import {
   sendLeadNoteTelegram,
   sendDepartmentTaskAssignedTelegram,
   sendDepartmentReminderTelegram,
-  sendDepartmentCommentTelegram
+  sendDepartmentCommentTelegram,
+  processDepartmentReminders
 } from '@/lib/telegram/client';
 
 export const runtime = 'nodejs';
@@ -2522,6 +2523,11 @@ async function handle(request, ctx) {
         })
       ]);
 
+      // Automatic background sweep: trigger auto reminders dispatch asynchronously without blocking response
+      processDepartmentReminders(db, me.activeOrgId).catch(err => {
+        console.error('[Auto Background Dept Reminders Error]', err);
+      });
+
       return json({
         tasks: data,
         data,
@@ -2603,84 +2609,10 @@ async function handle(request, ctx) {
     }
 
     if (route === 'department-tasks/check-reminders' && method === 'POST') {
-      const now = new Date();
-      const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(now);
-      const twoDaysObj = new Date(now.getTime() + 2 * 24 * 60 * 60 * 1000);
-      const twoDaysLaterStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(twoDaysObj);
-
-      const activeTasks = await db.collection('department_tasks').find({
-        orgId: me.activeOrgId,
-        status: { $nin: ['Completed', 'Closed'] },
-        $or: [
-          { dueDate: todayStr },
-          { visitDate: todayStr },
-          { dueDate: twoDaysLaterStr },
-          { visitDate: twoDaysLaterStr }
-        ]
-      }).toArray();
-
-      const results = [];
-      let sentCount = 0;
-
-      for (const task of activeTasks) {
-        const remindersSent = Array.isArray(task.remindersSent) ? task.remindersSent : [];
-        const isDueToday = task.dueDate === todayStr || task.visitDate === todayStr;
-        const isDueInTwoDays = task.dueDate === twoDaysLaterStr || task.visitDate === twoDaysLaterStr;
-
-        let reminderType = null;
-        let reminderKey = '';
-
-        if (isDueToday) {
-          reminderType = 'due_today';
-          reminderKey = `due_today_${todayStr}`;
-        } else if (isDueInTwoDays) {
-          reminderType = 'two_days_prior';
-          reminderKey = `two_days_prior_${todayStr}`;
-        }
-
-        if (reminderType && !remindersSent.some(r => r.key === reminderKey || (r.type === reminderType && r.date === todayStr))) {
-          const assignees = Array.isArray(task.assignees) && task.assignees.length ? task.assignees : (task.assignedTo ? [task.assignedTo] : []);
-          const targetUsers = await db.collection('users').find({ id: { $in: assignees } }).toArray();
-
-          for (const targetUser of targetUsers) {
-            try {
-              await sendDepartmentReminderTelegram(db, targetUser, task, reminderType);
-              sentCount++;
-            } catch (err) {
-              console.error('[Telegram Dept Reminder Error]', err);
-            }
-          }
-
-          const newReminderEntry = {
-            key: reminderKey,
-            type: reminderType,
-            date: todayStr,
-            at: new Date().toISOString(),
-            sentCount: targetUsers.length
-          };
-
-          await db.collection('department_tasks').updateOne(
-            { id: task.id },
-            { $push: { remindersSent: newReminderEntry } }
-          );
-
-          results.push({
-            taskId: task.id,
-            title: task.title,
-            department: task.department,
-            reminderType,
-            recipientCount: targetUsers.length
-          });
-        }
-      }
-
+      const result = await processDepartmentReminders(db, me.activeOrgId);
       return json({
-        ok: true,
-        todayStr,
-        twoDaysLaterStr,
-        activeTasksChecked: activeTasks.length,
-        remindersSentCount: sentCount,
-        dispatched: results
+        ...result,
+        remindersSentCount: result.sentCount || 0
       });
     }
 

@@ -3,6 +3,10 @@
     {
       "path": "/api/cron/daily-whatsapp-roster",
       "schedule": "0 4 * * *"
+    },
+    {
+      "path": "/api/cron/department-reminders",
+      "schedule": "30 3 * * *"
     }
   ]
 }
