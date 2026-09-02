@@ -2520,8 +2520,11 @@ function Tasks({ user, viewParams = {}, setView }) {
   const canEditAny = user.role !== 'staff'; // Only managers/admins can edit any task fully
   function canEditTask(t) {
     if (canEditAny) return true;
-    // Staff can edit their own tasks
-    return t.assignedTo === user.id;
+    if (!t) return false;
+    // Staff can edit tasks where they are an assignee, milestone assignee, or creator
+    const ids = (t.assignees && t.assignees.length) ? t.assignees : (t.assignedTo ? [t.assignedTo] : []);
+    const milestoneIds = Array.isArray(t.milestones) ? t.milestones.flatMap(m => (m.assignees && m.assignees.length ? m.assignees : (m.assignedTo ? [m.assignedTo] : []))) : [];
+    return ids.includes(user.id) || milestoneIds.includes(user.id) || t.createdBy === user.id;
   }
   function canDeleteTask() { return canEditAny; }
 
@@ -3807,8 +3810,12 @@ function TaskDetail({ task, users, currentUser, onClose, onChanged }) {
     } catch (e) { toast.error(e.message); }
   }
 
+  const taskAssigneeList = (task.assignees && task.assignees.length) ? task.assignees : (task.assignedTo ? [task.assignedTo] : []);
+  const taskMilestoneAssigneeList = Array.isArray(task.milestones) ? task.milestones.flatMap(m => (m.assignees && m.assignees.length ? m.assignees : (m.assignedTo ? [m.assignedTo] : []))) : [];
+  const isUserAssigned = currentUser && (taskAssigneeList.includes(currentUser.id) || taskMilestoneAssigneeList.includes(currentUser.id) || task.createdBy === currentUser.id);
+
   const canResolveDiscussion = task.needsDiscussion && currentUser && (currentUser.role === 'admin' || currentUser.role === 'manager') && task.discussionWith === currentUser.id;
-  const canEditStatus = currentUser && (currentUser.role !== 'staff' || task.assignedTo === currentUser.id);
+  const canEditStatus = currentUser && (currentUser.role !== 'staff' || isUserAssigned);
 
   return (
     <Dialog open onOpenChange={onClose}>
@@ -3836,7 +3843,7 @@ function TaskDetail({ task, users, currentUser, onClose, onChanged }) {
           <Info label="Category" value={task.category} />
           <Info label="Priority" value={task.priority} />
           <Info label="Due Date" value={task.dueDate ? new Date(task.dueDate).toLocaleDateString() : '-'} />
-          <Info label="Assigned To" value={userName(task.assignedTo)} />
+          <Info label="Assigned To" value={taskAssigneeList.length ? taskAssigneeList.map(userName).join(', ') : '-'} />
           <Info label="Client" value={task.clientName || '-'} />
           <Info label="Created" value={`${new Date(task.createdAt).toLocaleString()}${task.createdByName ? ' by ' + task.createdByName : ''}`} />
           {task.status === 'Completed' && (
@@ -8920,7 +8927,7 @@ function DepartmentView({ user, viewParams, setView }) {
     setLoading(true);
     try {
       const [tasksRes, usersRes, clientsRes] = await Promise.all([
-        call('department-tasks'),
+        call('department-tasks?limit=500'),
         call('users'),
         call('clients').catch(() => ({ clients: [] })),
       ]);
@@ -8962,7 +8969,7 @@ function DepartmentView({ user, viewParams, setView }) {
 
   async function quickStatusChange(task, newStatus) {
     try {
-      await call(`department-tasks?id=${task.id}`, {
+      await call(`department-tasks/${task.id}`, {
         method: 'PUT',
         body: { status: newStatus },
       });
@@ -8976,7 +8983,7 @@ function DepartmentView({ user, viewParams, setView }) {
   async function deleteTask(id) {
     if (!confirm('Are you sure you want to delete this department task?')) return;
     try {
-      await call(`department-tasks?id=${id}`, { method: 'DELETE' });
+      await call(`department-tasks/${id}`, { method: 'DELETE' });
       toast.success('Department task deleted');
       loadData();
     } catch (e) {
@@ -9010,7 +9017,7 @@ function DepartmentView({ user, viewParams, setView }) {
     if (priorityFilter !== 'all' && t.priority !== priorityFilter) return false;
     // Assignee
     if (assigneeFilter !== 'all') {
-      const assignees = t.assignees || (t.assignedTo ? [t.assignedTo] : []);
+      const assignees = (t.assignees && t.assignees.length) ? t.assignees : (t.assignedTo ? [t.assignedTo] : []);
       if (!assignees.includes(assigneeFilter)) return false;
     }
 
@@ -9707,7 +9714,7 @@ function DepartmentTaskForm({ initial, users, clients, currentUser, onClose, onS
     setSaving(true);
     try {
       if (f.id) {
-        await call(`department-tasks?id=${f.id}`, {
+        await call(`department-tasks/${f.id}`, {
           method: 'PUT',
           body: f,
         });

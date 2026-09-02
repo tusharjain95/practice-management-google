@@ -2492,6 +2492,13 @@ async function handle(request, ctx) {
         .limit(limit)
         .toArray();
 
+      // Normalize assignees for every department task
+      for (const t of data) {
+        if (!t.assignees || !Array.isArray(t.assignees) || !t.assignees.length) {
+          t.assignees = t.assignedTo ? [t.assignedTo] : [];
+        }
+      }
+
       // Aggregate stats
       const allOrgFilter = { orgId: me.activeOrgId };
       const now = new Date();
@@ -2616,8 +2623,8 @@ async function handle(request, ctx) {
       });
     }
 
-    if (route.startsWith('department-tasks/') && method === 'PUT') {
-      const id = route.split('/')[1];
+    if ((route.startsWith('department-tasks/') || route === 'department-tasks') && method === 'PUT') {
+      const id = route.split('/')[1] || url.searchParams.get('id');
       const sub = route.split('/')[2];
       if (sub === 'comments') {
         const { comment } = await request.json();
@@ -2666,6 +2673,24 @@ async function handle(request, ctx) {
       if (Array.isArray(body.assignees)) {
         body.assignees = body.assignees.filter(Boolean);
         body.assignedTo = body.assignees[0] || body.assignedTo || '';
+      } else if (body.assignedTo) {
+        body.assignees = [body.assignedTo];
+      }
+
+      // Check for newly added assignees to dispatch assignment Telegram notification
+      try {
+        const oldAssignees = Array.isArray(existing.assignees) && existing.assignees.length ? existing.assignees : (existing.assignedTo ? [existing.assignedTo] : []);
+        const newAssignees = Array.isArray(body.assignees) && body.assignees.length ? body.assignees : oldAssignees;
+        const newlyAdded = newAssignees.filter(uid => !oldAssignees.includes(uid));
+        if (newlyAdded.length > 0) {
+          db.collection('users').find({ id: { $in: newlyAdded } }).toArray().then(newUsers => {
+            newUsers.forEach(newUser => {
+              sendDepartmentTaskAssignedTelegram(db, newUser, { ...existing, ...body }).catch(err => console.error(err));
+            });
+          }).catch(err => console.error(err));
+        }
+      } catch (e) {
+        console.error('[Department Task Reassignment Notification Error]', e);
       }
 
       body.updatedAt = new Date().toISOString();
@@ -2675,9 +2700,9 @@ async function handle(request, ctx) {
       return json({ ok: true });
     }
 
-    if (route.startsWith('department-tasks/') && method === 'DELETE') {
+    if ((route.startsWith('department-tasks/') || route === 'department-tasks') && method === 'DELETE') {
       if (me.role === 'staff') return json({ error: 'Forbidden' }, 403);
-      const id = route.split('/')[1];
+      const id = route.split('/')[1] || url.searchParams.get('id');
       await db.collection('department_tasks').deleteOne({ id, orgId: me.activeOrgId });
       logActivity(db, me, 'delete', 'department_task', id);
       return json({ ok: true });
