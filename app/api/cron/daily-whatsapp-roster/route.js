@@ -151,11 +151,100 @@ async function handleCron(request) {
       console.error('[Cron Error] Department reminders auto-dispatch failed:', deptErr);
     }
 
+    // Automatically check and create compliance review tasks for any clients due today or overdue
+    let complianceReviewTasksCreated = 0;
+    try {
+      const allClientsWithReview = await db.collection('clients').find({
+        autoReviewPeriodMonths: { $gt: 0 },
+        $or: [
+          { complianceAssignedTo: { $exists: true, $ne: '' } },
+          { assignedTo: { $exists: true, $ne: '' } }
+        ]
+      }).toArray();
+
+      for (const cl of allClientsWithReview) {
+        const assignedTo = cl.complianceAssignedTo || cl.assignedTo;
+        if (!assignedTo) continue;
+        const months = Number(cl.autoReviewPeriodMonths) || 3;
+        let nextReviewDate = null;
+        if (cl.lastReviewedOn) {
+          const d = new Date(cl.lastReviewedOn);
+          if (!isNaN(d.getTime())) {
+            d.setMonth(d.getMonth() + months);
+            nextReviewDate = d.toISOString().slice(0, 10);
+          }
+        } else {
+          nextReviewDate = cl.createdAt ? cl.createdAt.slice(0, 10) : dateStr;
+        }
+
+        if (nextReviewDate && nextReviewDate <= dateStr) {
+          const existingPending = await db.collection('tasks').findOne({
+            clientId: cl.id,
+            category: 'Compliance',
+            status: { $in: ['Pending', 'In Progress'] }
+          });
+
+          if (!existingPending) {
+            const applicableIds = Array.isArray(cl.applicableCompliances) ? cl.applicableCompliances : [];
+            let compNames = [];
+            if (applicableIds.length > 0) {
+              const comps = await db.collection('compliances').find({ id: { $in: applicableIds } }).toArray();
+              compNames = comps.map(c => c.name);
+            }
+
+            const assignedUser = await db.collection('users').findOne({ id: assignedTo });
+            const reviewTask = {
+              id: (await import('uuid')).v4(),
+              orgId: cl.orgId,
+              title: `Compliance Review Due: ${cl.name}`,
+              description: `[Auto-Scheduled Review Task]\nClient: ${cl.name} ${cl.company ? '(' + cl.company + ')' : ''}\n` +
+                `GSTIN: ${cl.gstin || 'N/A'}\nLast Reviewed: ${cl.lastReviewedOn || 'Never'}\n` +
+                `Review Interval: Every ${months} month(s)\nNext Due: ${nextReviewDate}\n` +
+                `Applicable: ${compNames.join(', ') || 'General'}\n` +
+                `Please audit books and mark review complete in Compliances Matrix.`,
+              category: 'Compliance',
+              priority: 'High',
+              dueDate: nextReviewDate,
+              assignedTo,
+              assignees: [assignedTo],
+              status: 'Pending',
+              isBiggerTask: true,
+              milestones: compNames.map((cName, idx) => ({
+                id: (Math.random() + 1).toString(36).substring(7),
+                title: `Verify ${cName} Status`,
+                status: 'Pending',
+                completed: false,
+                order: idx
+              })),
+              leadId: null,
+              clientId: cl.id,
+              clientName: cl.name,
+              comments: [],
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+              createdBy: 'system',
+              createdByName: 'Daily Compliance Cron',
+            };
+
+            await db.collection('tasks').insertOne(reviewTask);
+            await db.collection('clients').updateOne(
+              { id: cl.id },
+              { $set: { lastReviewTaskId: reviewTask.id, nextReviewDate } }
+            );
+            complianceReviewTasksCreated++;
+          }
+        }
+      }
+    } catch (compErr) {
+      console.error('[Cron Error] Compliance review auto-creation failed:', compErr);
+    }
+
     return NextResponse.json({
       message: 'Daily roster process complete.',
       processedCount: users.length,
       results,
       deptRemindersReport,
+      complianceReviewTasksCreated,
       date: dateStr,
       yesterday: yesterdayStr
     });

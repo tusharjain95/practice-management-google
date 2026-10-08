@@ -3878,28 +3878,280 @@ async function handle(request, ctx) {
       return json({ asOn: todayStr, totals, perClient });
     }
 
-    // -------- COMPLIANCES --------
+    // -------- COMPLIANCES & MATRIX REVIEW SYSTEM --------
+    // Helper to calculate next review date
+    const computeNextReviewDate = (lastReviewedOn, periodMonths, createdAt) => {
+      const months = Number(periodMonths);
+      if (!months || months <= 0) return null;
+      if (lastReviewedOn) {
+        const d = new Date(lastReviewedOn);
+        if (!isNaN(d.getTime())) {
+          d.setMonth(d.getMonth() + months);
+          return d.toISOString().slice(0, 10);
+        }
+      }
+      // If never reviewed but period is set, next review date defaults to creation date or today (due immediately)
+      if (createdAt) return createdAt.slice(0, 10);
+      return new Date().toISOString().slice(0, 10);
+    };
+
+    // Helper to auto-create review task when review is due
+    const createReviewTaskIfDue = async (client, meUser, todayStr = new Date().toISOString().slice(0, 10)) => {
+      const assignedTo = client.complianceAssignedTo || client.assignedTo;
+      if (!assignedTo) return { created: false, reason: 'No assigned user for client' };
+
+      const months = Number(client.autoReviewPeriodMonths);
+      if (!months || months <= 0) return { created: false, reason: 'No auto review period set' };
+
+      const nextReviewDate = computeNextReviewDate(client.lastReviewedOn, months, client.createdAt);
+      if (!nextReviewDate) return { created: false, reason: 'Invalid review date calculation' };
+
+      const isDue = nextReviewDate <= todayStr;
+      if (!isDue) return { created: false, reason: 'Not due yet', nextReviewDate };
+
+      // Avoid duplicate pending/in-progress review tasks for this client
+      const existingTask = await db.collection('tasks').findOne({
+        clientId: client.id,
+        category: 'Compliance',
+        status: { $in: ['Pending', 'In Progress'] },
+        orgId: client.orgId || meUser?.activeOrgId,
+      });
+
+      if (existingTask) {
+        return { created: false, reason: 'Active review task already exists', taskId: existingTask.id, nextReviewDate };
+      }
+
+      // Fetch applicable compliance names for this client
+      const applicableIds = Array.isArray(client.applicableCompliances) ? client.applicableCompliances : [];
+      let compNames = [];
+      if (applicableIds.length > 0) {
+        const comps = await db.collection('compliances').find({ id: { $in: applicableIds } }).toArray();
+        compNames = comps.map(c => c.name);
+      }
+
+      const assignedUser = await db.collection('users').findOne({ id: assignedTo });
+
+      // Milestones checklist for review
+      const milestones = compNames.map((cName, idx) => ({
+        id: uuidv4(),
+        title: `Verify ${cName} Filings & Compliance Status`,
+        description: `Check returns, challans, documents and reconciliation for ${client.name}`,
+        dueDate: nextReviewDate,
+        assignedTo,
+        assignees: [assignedTo],
+        status: 'Pending',
+        completed: false,
+        order: idx,
+      }));
+      milestones.push({
+        id: uuidv4(),
+        title: `Mark Compliance Review Complete in Compliances Tab`,
+        description: `Update 'Last Reviewed On' date to record compliance check completion`,
+        dueDate: nextReviewDate,
+        assignedTo,
+        assignees: [assignedTo],
+        status: 'Pending',
+        completed: false,
+        order: milestones.length,
+      });
+
+      const task = {
+        id: uuidv4(),
+        orgId: client.orgId || meUser?.activeOrgId,
+        title: `Compliance Review Due: ${client.name}`,
+        description: `[Auto-Generated Compliance Review Task]\n` +
+          `Client: ${client.name} ${client.company ? '(' + client.company + ')' : ''}\n` +
+          `GSTIN: ${client.gstin || 'N/A'} | PAN: ${client.pan || 'N/A'} | Phone: ${client.phone || 'N/A'}\n` +
+          `Last Reviewed On: ${client.lastReviewedOn || 'Never'}\n` +
+          `Auto Review Interval: Every ${months} month(s)\n` +
+          `Next Review Due Date: ${nextReviewDate} (Due <= Today: ${todayStr})\n` +
+          `Applicable Compliances: ${compNames.length ? compNames.join(', ') : 'None marked'}\n\n` +
+          `Action Required: Audit all applicable tax filings, books, pending notices, and update review log in Compliances Matrix.`,
+        category: 'Compliance',
+        priority: 'High',
+        dueDate: nextReviewDate,
+        assignedTo,
+        assignees: [assignedTo],
+        status: 'Pending',
+        isBiggerTask: true,
+        milestones,
+        leadId: null,
+        clientId: client.id,
+        clientName: client.name,
+        recurrence: 'none',
+        comments: [
+          {
+            id: uuidv4(),
+            text: `System auto-created this compliance review task because next review date (${nextReviewDate}) is due (<= today ${todayStr}). Assigned to ${assignedUser ? assignedUser.name : 'assigned staff member'}.`,
+            createdAt: new Date().toISOString(),
+            userId: meUser?.id || 'system',
+            userName: meUser?.name || 'System Auto-Reviewer',
+          }
+        ],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        createdBy: meUser?.id || 'system',
+        createdByName: meUser?.name || 'System Auto-Reviewer',
+      };
+
+      await db.collection('tasks').insertOne(task);
+      await db.collection('clients').updateOne(
+        { id: client.id },
+        {
+          $set: {
+            lastReviewTaskId: task.id,
+            lastReviewTaskCreatedAt: new Date().toISOString(),
+            nextReviewDate,
+          }
+        }
+      );
+
+      // Async Notifications to assigned user
+      if (assignedUser) {
+        sendTaskAssignedWhatsApp(db, assignedUser, task).catch(err => console.error('[Auto-Review WhatsApp Error]', err));
+        sendTaskAssignedTelegram(db, assignedUser, task).catch(err => console.error('[Auto-Review Telegram Error]', err));
+      }
+
+      return { created: true, task, taskId: task.id, nextReviewDate };
+    };
+
     if (route === 'compliances' && method === 'GET') {
-      const items = await db.collection('compliances').find({}).project({ _id: 0 }).sort({ name: 1 }).toArray();
-      // For each compliance, count applicable clients
-      const clients = await db.collection('clients').find({}).project({ _id: 0 }).toArray();
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const orgFilter = {
+        $or: [
+          { orgId: me.activeOrgId },
+          { orgId: null },
+          { orgId: { $exists: false } }
+        ]
+      };
+
+      let items = await db.collection('compliances').find(orgFilter).project({ _id: 0 }).sort({ order: 1, name: 1 }).toArray();
+
+      // Check if this organization has explicitly initialized compliances
+      const orgDoc = await db.collection('orgs').findOne({ id: me.activeOrgId });
+      const hasInitialized = orgDoc?.compliancesInitialized === true;
+
+      // Seed standard compliance categories only if none exist in the system AND org has never been initialized
+      if ((!items || items.length === 0) && !hasInitialized) {
+        const standardCompliances = [
+          { id: uuidv4(), orgId: me.activeOrgId, isStandard: true, name: 'GST', code: 'GST', description: 'GSTR-1, GSTR-3B & Annual GSTR-9 Filings', frequency: 'monthly', order: 1, createdAt: new Date().toISOString(), createdBy: me.id },
+          { id: uuidv4(), orgId: me.activeOrgId, isStandard: true, name: 'TDS', code: 'TDS', description: 'TDS Payment & Quarterly 24Q/26Q/27Q Returns', frequency: 'quarterly', order: 2, createdAt: new Date().toISOString(), createdBy: me.id },
+          { id: uuidv4(), orgId: me.activeOrgId, isStandard: true, name: 'Income Tax (ITR)', code: 'ITR', description: 'Annual Income Tax Return & Tax Audit', frequency: 'yearly', order: 3, createdAt: new Date().toISOString(), createdBy: me.id },
+          { id: uuidv4(), orgId: me.activeOrgId, isStandard: true, name: 'ROC / MCA', code: 'ROC', description: 'AOC-4, MGT-7, DIR-3 KYC & Company Compliances', frequency: 'yearly', order: 4, createdAt: new Date().toISOString(), createdBy: me.id },
+          { id: uuidv4(), orgId: me.activeOrgId, isStandard: true, name: 'PF & ESIC', code: 'PF/ESI', description: 'Monthly PF ECR Challans & ESIC Returns', frequency: 'monthly', order: 5, createdAt: new Date().toISOString(), createdBy: me.id },
+          { id: uuidv4(), orgId: me.activeOrgId, isStandard: true, name: 'Advance Tax', code: 'ADV_TAX', description: 'Quarterly Advance Tax Estimation & Payment', frequency: 'quarterly', order: 6, createdAt: new Date().toISOString(), createdBy: me.id },
+          { id: uuidv4(), orgId: me.activeOrgId, isStandard: true, name: 'Statutory Audit', code: 'AUDIT', description: 'Annual Books Audit & Financials Finalization', frequency: 'yearly', order: 7, createdAt: new Date().toISOString(), createdBy: me.id },
+        ];
+        await db.collection('compliances').insertMany(standardCompliances);
+        await db.collection('orgs').updateOne({ id: me.activeOrgId }, { $set: { compliancesInitialized: true } });
+        items = standardCompliances.map(({ _id, ...safe }) => safe);
+      }
+
+      // Ensure standard flag is set consistently for standard compliances
+      const STANDARD_CODES = ['GST', 'TDS', 'ITR', 'ROC', 'PF/ESI', 'ADV_TAX', 'AUDIT', 'PT', 'FEMA', 'TP'];
+      for (const item of items) {
+        if (item.isStandard === undefined) {
+          item.isStandard = STANDARD_CODES.includes(item.code) ||
+            ['GST', 'TDS', 'Income Tax (ITR)', 'ROC / MCA', 'PF & ESIC', 'Advance Tax', 'Statutory Audit'].includes(item.name);
+        }
+      }
+
+      // Fetch all clients of this organization
+      const clients = await db.collection('clients').find({ orgId: me.activeOrgId }).project({ _id: 0 }).sort({ name: 1 }).toArray();
+
+      // Fetch active pending review tasks to map them to clients
+      const pendingReviewTasks = await db.collection('tasks').find({
+        orgId: me.activeOrgId,
+        category: 'Compliance',
+        status: { $in: ['Pending', 'In Progress'] }
+      }).project({ id: 1, clientId: 1, title: 1, dueDate: 1, status: 1, assignedTo: 1, _id: 0 }).toArray();
+
+      const taskMap = {};
+      for (const t of pendingReviewTasks) {
+        if (t.clientId && !taskMap[t.clientId]) taskMap[t.clientId] = t;
+      }
+
+      // Enhance client objects with next review date and review status
+      for (const cl of clients) {
+        if (!cl.applicableCompliances || !Array.isArray(cl.applicableCompliances)) {
+          cl.applicableCompliances = [];
+        }
+        if (!cl.complianceAssignedTo) {
+          cl.complianceAssignedTo = cl.assignedTo || '';
+        }
+        const period = Number(cl.autoReviewPeriodMonths) || 3;
+        cl.autoReviewPeriodMonths = period;
+
+        const nextReviewDate = computeNextReviewDate(cl.lastReviewedOn, period, cl.createdAt);
+        cl.nextReviewDate = nextReviewDate;
+        cl.isReviewDue = nextReviewDate ? nextReviewDate <= todayStr : false;
+        cl.pendingReviewTask = taskMap[cl.id] || null;
+      }
+
+      // For each compliance, count applicable clients and attach list
       for (const c of items) {
         c.applicableClients = clients
           .filter(cl => Array.isArray(cl.applicableCompliances) && cl.applicableCompliances.includes(c.id))
-          .map(cl => ({ id: cl.id, name: cl.name, company: cl.company || '', gstin: cl.gstin || '' }));
+          .map(cl => ({
+            id: cl.id,
+            name: cl.name,
+            company: cl.company || '',
+            gstin: cl.gstin || '',
+            phone: cl.phone || '',
+            complianceAssignedTo: cl.complianceAssignedTo || '',
+            lastReviewedOn: cl.lastReviewedOn || '',
+            nextReviewDate: cl.nextReviewDate || '',
+            isReviewDue: cl.isReviewDue
+          }));
         c.clientCount = c.applicableClients.length;
       }
-      return json({ compliances: items });
+
+      // Fetch active users for assignment selector
+      const users = await db.collection('users').find({
+        $or: [{ orgId: me.activeOrgId }, { activeOrgId: me.activeOrgId }, { active: true }]
+      }).project({ id: 1, name: 1, email: 1, role: 1, phone: 1, _id: 0 }).sort({ name: 1 }).toArray();
+
+      // Filter unique users
+      const userMap = {};
+      const uniqueUsers = [];
+      for (const u of users) {
+        if (!userMap[u.id]) {
+          userMap[u.id] = true;
+          uniqueUsers.push(u);
+        }
+      }
+
+      // Statistics
+      const stats = {
+        totalClients: clients.length,
+        totalCompliances: items.length,
+        reviewDueCount: clients.filter(c => c.isReviewDue).length,
+        reviewedCount: clients.filter(c => !c.isReviewDue && c.lastReviewedOn).length,
+        pendingReviewTasksCount: Object.keys(taskMap).length,
+        unassignedCount: clients.filter(c => !c.complianceAssignedTo).length,
+      };
+
+      return json({
+        compliances: items,
+        clients,
+        users: uniqueUsers,
+        stats,
+        today: todayStr,
+      });
     }
+
     if (route === 'compliances' && method === 'POST') {
-      if (me.role !== 'admin') return json({ error: 'Forbidden' }, 403);
+      if (me.role === 'staff' && !me.permissions?.compliances) return json({ error: 'Forbidden' }, 403);
       const body = await request.json();
       const comp = {
         id: uuidv4(),
-        name: body.name,
+        orgId: me.activeOrgId,
+        name: body.name.trim(),
+        code: (body.code || body.name.slice(0, 8)).trim().toUpperCase(),
         description: body.description || '',
-        frequency: body.frequency || 'one-time', // daily/weekly/monthly/quarterly/half-yearly/yearly/one-time
-        dueDay: body.dueDay || '', // e.g., "20th of next month"
+        frequency: body.frequency || 'monthly', // daily/weekly/monthly/quarterly/half-yearly/yearly/one-time
+        dueDay: body.dueDay || '',
+        order: Number(body.order) || 99,
         createdAt: new Date().toISOString(),
         createdBy: me.id,
       };
@@ -3908,21 +4160,258 @@ async function handle(request, ctx) {
       const { _id, ...safe } = comp;
       return json({ compliance: safe });
     }
+
     if (route.startsWith('compliances/') && method === 'PUT') {
-      if (me.role !== 'admin') return json({ error: 'Forbidden' }, 403);
       const id = route.split('/')[1];
-      const body = await request.json();
-      delete body.id;
-      await db.collection('compliances').updateOne({ id }, { $set: body });
-      logActivity(db, me, 'update', 'compliance', id);
-      return json({ ok: true });
+      if (id === 'client-matrix') {
+        // Handled below
+      } else {
+        if (me.role === 'staff' && !me.permissions?.compliances) return json({ error: 'Forbidden' }, 403);
+        const body = await request.json();
+        delete body.id;
+        delete body._id;
+        body.updatedAt = new Date().toISOString();
+        await db.collection('compliances').updateOne(
+          { id, $or: [{ orgId: me.activeOrgId }, { orgId: null }, { orgId: { $exists: false } }] },
+          { $set: body }
+        );
+        logActivity(db, me, 'update', 'compliance', id);
+        return json({ ok: true });
+      }
     }
+
+    // Direct client compliance row updates (Applicability, Assigned To, Last Reviewed, Auto Review Period)
+    if ((route === 'compliances/client-matrix' || route.startsWith('compliances/client-matrix')) && (method === 'PUT' || method === 'POST')) {
+      const body = await request.json();
+      const { clientId, applicableCompliances, complianceAssignedTo, lastReviewedOn, autoReviewPeriodMonths, autoCreateTask = true } = body;
+      if (!clientId) return json({ error: 'clientId is required' }, 400);
+
+      const client = await db.collection('clients').findOne({ id: clientId, orgId: me.activeOrgId });
+      if (!client) return json({ error: 'Client not found' }, 404);
+
+      const updateFields = { updatedAt: new Date().toISOString() };
+      if (applicableCompliances !== undefined) updateFields.applicableCompliances = Array.isArray(applicableCompliances) ? applicableCompliances : [];
+      if (complianceAssignedTo !== undefined) {
+        updateFields.complianceAssignedTo = complianceAssignedTo;
+        updateFields.assignedTo = complianceAssignedTo || client.assignedTo;
+      }
+      if (lastReviewedOn !== undefined) updateFields.lastReviewedOn = lastReviewedOn;
+      if (autoReviewPeriodMonths !== undefined) updateFields.autoReviewPeriodMonths = Number(autoReviewPeriodMonths) || 3;
+
+      const currentPeriod = updateFields.autoReviewPeriodMonths !== undefined ? updateFields.autoReviewPeriodMonths : (client.autoReviewPeriodMonths || 3);
+      const currentLastReviewed = updateFields.lastReviewedOn !== undefined ? updateFields.lastReviewedOn : client.lastReviewedOn;
+      const todayStr = new Date().toISOString().slice(0, 10);
+
+      const nextReviewDate = computeNextReviewDate(currentLastReviewed, currentPeriod, client.createdAt);
+      updateFields.nextReviewDate = nextReviewDate;
+
+      await db.collection('clients').updateOne({ id: clientId, orgId: me.activeOrgId }, { $set: updateFields });
+
+      const updatedClient = { ...client, ...updateFields };
+      let taskResult = { created: false };
+
+      // Auto-create review task if next review date is <= today and autoCreateTask is requested
+      if (autoCreateTask && nextReviewDate && nextReviewDate <= todayStr && (updatedClient.complianceAssignedTo || updatedClient.assignedTo)) {
+        taskResult = await createReviewTaskIfDue(updatedClient, me, todayStr);
+      }
+
+      logActivity(db, me, 'update', 'client_compliance_matrix', clientId, {
+        applicableCount: updatedClient.applicableCompliances?.length || 0,
+        complianceAssignedTo: updatedClient.complianceAssignedTo,
+        lastReviewedOn: updatedClient.lastReviewedOn,
+        nextReviewDate,
+        taskCreated: taskResult.created
+      });
+
+      return json({
+        ok: true,
+        client: updatedClient,
+        nextReviewDate,
+        isReviewDue: nextReviewDate ? nextReviewDate <= todayStr : false,
+        taskCreated: !!taskResult.created,
+        taskId: taskResult.taskId || null,
+        taskReason: taskResult.reason || null,
+      });
+    }
+
+    // Trigger sync/batch auto-creation of review tasks for all clients due for review
+    if (route === 'compliances/sync-review-tasks' && method === 'POST') {
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const clients = await db.collection('clients').find({ orgId: me.activeOrgId }).toArray();
+      let createdCount = 0;
+      const createdTasks = [];
+
+      for (const cl of clients) {
+        if (!cl.complianceAssignedTo && !cl.assignedTo) continue;
+        const period = Number(cl.autoReviewPeriodMonths) || 3;
+        const nextReviewDate = computeNextReviewDate(cl.lastReviewedOn, period, cl.createdAt);
+        if (nextReviewDate && nextReviewDate <= todayStr) {
+          const res = await createReviewTaskIfDue(cl, me, todayStr);
+          if (res.created) {
+            createdCount++;
+            createdTasks.push({ clientId: cl.id, clientName: cl.name, taskId: res.taskId });
+          }
+        }
+      }
+
+      logActivity(db, me, 'sync', 'compliance_review_tasks', 'batch', { createdCount, scanned: clients.length });
+      return json({
+        ok: true,
+        scannedCount: clients.length,
+        createdCount,
+        tasks: createdTasks,
+      });
+    }
+
+    // Mark client as reviewed today
+    if (route === 'compliances/mark-reviewed' && method === 'POST') {
+      const body = await request.json();
+      const { clientId, reviewedDate } = body;
+      if (!clientId) return json({ error: 'clientId required' }, 400);
+
+      const client = await db.collection('clients').findOne({ id: clientId, orgId: me.activeOrgId });
+      if (!client) return json({ error: 'Client not found' }, 404);
+
+      const todayStr = reviewedDate || new Date().toISOString().slice(0, 10);
+      const period = Number(client.autoReviewPeriodMonths) || 3;
+      const nextReviewDate = computeNextReviewDate(todayStr, period, client.createdAt);
+
+      await db.collection('clients').updateOne(
+        { id: clientId, orgId: me.activeOrgId },
+        {
+          $set: {
+            lastReviewedOn: todayStr,
+            nextReviewDate,
+            updatedAt: new Date().toISOString(),
+          }
+        }
+      );
+
+      // If there was an open review task for this client, mark it completed!
+      const openTask = await db.collection('tasks').findOne({
+        clientId,
+        category: 'Compliance',
+        status: { $in: ['Pending', 'In Progress'] },
+        orgId: me.activeOrgId,
+      });
+
+      if (openTask) {
+        await db.collection('tasks').updateOne(
+          { id: openTask.id },
+          {
+            $set: {
+              status: 'Completed',
+              completedAt: new Date().toISOString(),
+              completedBy: me.id,
+              completedByName: me.name,
+              updatedAt: new Date().toISOString(),
+            },
+            $push: {
+              comments: {
+                id: uuidv4(),
+                text: `Compliance review completed and marked up-to-date in Compliances Matrix by ${me.name}. Next review scheduled for ${nextReviewDate}.`,
+                createdAt: new Date().toISOString(),
+                userId: me.id,
+                userName: me.name,
+              }
+            }
+          }
+        );
+      }
+
+      logActivity(db, me, 'review', 'client_compliance', clientId, { lastReviewedOn: todayStr, nextReviewDate });
+      return json({ ok: true, lastReviewedOn: todayStr, nextReviewDate, openTaskResolved: !!openTask });
+    }
+
+    if (route === 'compliances/restore-standard' && method === 'POST') {
+      if (me.role === 'staff' && !me.permissions?.compliances) return json({ error: 'Forbidden' }, 403);
+      const body = await request.json().catch(() => ({}));
+      const ALL_STANDARDS = [
+        { code: 'GST', name: 'GST', description: 'GSTR-1, GSTR-3B & Annual GSTR-9 Filings', frequency: 'monthly', order: 1 },
+        { code: 'TDS', name: 'TDS', description: 'TDS Payment & Quarterly 24Q/26Q/27Q Returns', frequency: 'quarterly', order: 2 },
+        { code: 'ITR', name: 'Income Tax (ITR)', description: 'Annual Income Tax Return & Tax Audit', frequency: 'yearly', order: 3 },
+        { code: 'ROC', name: 'ROC / MCA', description: 'AOC-4, MGT-7, DIR-3 KYC & Company Compliances', frequency: 'yearly', order: 4 },
+        { code: 'PF/ESI', name: 'PF & ESIC', description: 'Monthly PF ECR Challans & ESIC Returns', frequency: 'monthly', order: 5 },
+        { code: 'ADV_TAX', name: 'Advance Tax', description: 'Quarterly Advance Tax Estimation & Payment', frequency: 'quarterly', order: 6 },
+        { code: 'AUDIT', name: 'Statutory Audit', description: 'Annual Books Audit & Financials Finalization', frequency: 'yearly', order: 7 },
+        { code: 'PT', name: 'Professional Tax (PT)', description: 'Monthly/Annual Professional Tax Returns & Challans', frequency: 'monthly', order: 8 },
+        { code: 'FEMA', name: 'FEMA / RBI', description: 'FLA Return, FC-GPR, APR & Foreign Inward Remittance', frequency: 'yearly', order: 9 },
+        { code: 'TP', name: 'Transfer Pricing', description: 'Form 3CEB & Transfer Pricing Study Report', frequency: 'yearly', order: 10 },
+      ];
+
+      const toRestore = body.code
+        ? ALL_STANDARDS.filter(s => s.code === body.code)
+        : (body.codes ? ALL_STANDARDS.filter(s => body.codes.includes(s.code)) : ALL_STANDARDS);
+
+      let added = 0;
+      for (const std of toRestore) {
+        const existing = await db.collection('compliances').findOne({
+          $or: [
+            { orgId: me.activeOrgId, code: std.code },
+            { orgId: me.activeOrgId, name: std.name },
+            { orgId: null, code: std.code }
+          ]
+        });
+        if (!existing) {
+          await db.collection('compliances').insertOne({
+            id: uuidv4(),
+            orgId: me.activeOrgId,
+            isStandard: true,
+            name: std.name,
+            code: std.code,
+            description: std.description,
+            frequency: std.frequency,
+            order: std.order,
+            createdAt: new Date().toISOString(),
+            createdBy: me.id,
+          });
+          added++;
+        }
+      }
+
+      await db.collection('orgs').updateOne({ id: me.activeOrgId }, { $set: { compliancesInitialized: true } });
+      logActivity(db, me, 'restore_standard_compliances', 'compliance', 'standard', { added });
+      return json({ ok: true, addedCount: added });
+    }
+
     if (route.startsWith('compliances/') && method === 'DELETE') {
-      if (me.role !== 'admin') return json({ error: 'Forbidden' }, 403);
+      if (me.role === 'staff' && !me.permissions?.compliances) return json({ error: 'Forbidden' }, 403);
       const id = route.split('/')[1];
-      await db.collection('compliances').deleteOne({ id });
+
+      // Mark organization as initialized so deleting all compliances won't auto-reseed
+      await db.collection('orgs').updateOne({ id: me.activeOrgId }, { $set: { compliancesInitialized: true } });
+
+      if (id === 'all-standard') {
+        const STANDARD_CODES = ['GST', 'TDS', 'ITR', 'ROC', 'PF/ESI', 'ADV_TAX', 'AUDIT', 'PT', 'FEMA', 'TP'];
+        const standardList = await db.collection('compliances').find({
+          $or: [{ orgId: me.activeOrgId }, { orgId: null }, { orgId: { $exists: false } }],
+          $or: [
+            { isStandard: true },
+            { code: { $in: STANDARD_CODES } },
+            { name: { $in: ['GST', 'TDS', 'Income Tax (ITR)', 'ROC / MCA', 'PF & ESIC', 'Advance Tax', 'Statutory Audit', 'Professional Tax (PT)'] } }
+          ]
+        }).toArray();
+        const standardIds = standardList.map(c => c.id);
+        if (standardIds.length > 0) {
+          await db.collection('compliances').deleteMany({ id: { $in: standardIds } });
+          await db.collection('clients').updateMany(
+            { orgId: me.activeOrgId },
+            { $pull: { applicableCompliances: { $in: standardIds } } }
+          );
+        }
+        logActivity(db, me, 'delete_all_standard', 'compliance', 'all', { count: standardIds.length });
+        return json({ ok: true, deletedCount: standardIds.length });
+      }
+
+      await db.collection('compliances').deleteOne({
+        id,
+        $or: [{ orgId: me.activeOrgId }, { orgId: null }, { orgId: { $exists: false } }]
+      });
       // Remove from all clients' applicable lists
-      await db.collection('clients').updateMany({}, { $pull: { applicableCompliances: id } });
+      await db.collection('clients').updateMany(
+        { orgId: me.activeOrgId },
+        { $pull: { applicableCompliances: id } }
+      );
       logActivity(db, me, 'delete', 'compliance', id);
       return json({ ok: true });
     }

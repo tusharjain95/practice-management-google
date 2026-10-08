@@ -13,6 +13,7 @@ import {
   Sun, Moon, FilePlus, PlusCircle, MinusCircle, Eye, MapPin, UserCheck, CalendarCheck, CheckSquare, Share2, Filter, User, SlidersHorizontal,
   Layers, Milestone, ChevronDown, ChevronUp, Check, CornerDownRight,
   Landmark, Gauge, Activity, Percent, CheckCheck, Timer, Award, Building,
+  RefreshCw, Download, CalendarClock, AlertCircle,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -21,6 +22,7 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
@@ -6851,168 +6853,1174 @@ function OrgAccessDialog({ target, onClose }) {
 
 function CompliancesView({ user }) {
   const { call } = useApi();
-  const [items, setItems] = useState([]);
+  const [compliances, setCompliances] = useState([]);
   const [clients, setClients] = useState([]);
-  const [open, setOpen] = useState(false);
-  const [editing, setEditing] = useState(null);
-  const [expanded, setExpanded] = useState(null);
-  const [assignOpen, setAssignOpen] = useState(null);
-  const [sortField, setSortField] = useState('name');
-  const [sortOrder, setSortOrder] = useState('asc');
+  const [usersList, setUsersList] = useState([]);
+  const [stats, setStats] = useState({ totalClients: 0, totalCompliances: 0, reviewDueCount: 0, reviewedCount: 0 });
+  const [todayStr, setTodayStr] = useState(new Date().toISOString().slice(0, 10));
+  const [loading, setLoading] = useState(true);
+  const [syncingTasks, setSyncingTasks] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
-  function handleSort(field) {
-    if (sortField === field) {
-      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
-    } else {
-      setSortField(field);
-      setSortOrder('asc');
+  // Filters & search
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterCompliance, setFilterCompliance] = useState('all');
+  const [filterStatus, setFilterStatus] = useState('all'); // all | due | soon | uptodate | unscheduled
+  const [filterAssignee, setFilterAssignee] = useState('all'); // all | unassigned | <userId>
+
+  // Modals
+  const [columnModalOpen, setColumnModalOpen] = useState(false);
+  const [editingCompliance, setEditingCompliance] = useState(null);
+  const [addClientModalOpen, setAddClientModalOpen] = useState(false);
+  const [manageCompliancesModalOpen, setManageCompliancesModalOpen] = useState(false);
+
+  // Row in-progress updating trackers
+  const [updatingClientIds, setUpdatingClientIds] = useState(new Set());
+
+  const canManageCompliances = user && (user.role === 'admin' || user.role === 'manager' || user.permissions?.compliances);
+
+  // Helper to calculate next review date in UI
+  function computeNextReviewDate(lastReviewedOn, periodMonths, createdAt) {
+    const months = Number(periodMonths);
+    if (!months || months <= 0) return null;
+    if (lastReviewedOn) {
+      const d = new Date(lastReviewedOn);
+      if (!isNaN(d.getTime())) {
+        d.setMonth(d.getMonth() + months);
+        return d.toISOString().slice(0, 10);
+      }
+    }
+    if (createdAt) return createdAt.slice(0, 10);
+    return todayStr;
+  }
+
+  // Load all compliances, clients, and users data
+  async function loadData() {
+    setLoading(true);
+    try {
+      const res = await call('compliances');
+      setCompliances(res.compliances || []);
+      setClients(res.clients || []);
+      setUsersList(res.users || []);
+      if (res.stats) setStats(res.stats);
+      if (res.today) setTodayStr(res.today);
+    } catch (e) {
+      toast.error('Failed to load compliances: ' + e.message);
+    } finally {
+      setLoading(false);
     }
   }
 
-  const sortedItems = useMemo(() => {
-    return [...items].sort((a, b) => {
-      let valA = a[sortField];
-      let valB = b[sortField];
-      if (valA === undefined || valA === null) valA = '';
-      if (valB === undefined || valB === null) valB = '';
-      if (typeof valA === 'string') {
-        return sortOrder === 'asc'
-          ? valA.localeCompare(valB)
-          : valB.localeCompare(valA);
-      } else {
-        return sortOrder === 'asc'
-          ? (valA > valB ? 1 : -1)
-          : (valB > valA ? 1 : -1);
-      }
-    });
-  }, [items, sortField, sortOrder]);
+  useEffect(() => {
+    loadData();
+  }, []);
 
-  async function load() {
+  // Update a single client compliance setting (applicability, assignee, last reviewed, period)
+  async function updateClientSetting(clientId, updates, autoCreateTask = true) {
+    // Optimistic UI update
+    setClients(prev => prev.map(cl => {
+      if (cl.id !== clientId) return cl;
+      const merged = { ...cl, ...updates };
+      const currentPeriod = merged.autoReviewPeriodMonths || 3;
+      const nextDate = computeNextReviewDate(merged.lastReviewedOn, currentPeriod, merged.createdAt);
+      merged.nextReviewDate = nextDate;
+      merged.isReviewDue = nextDate ? nextDate <= todayStr : false;
+      return merged;
+    }));
+
+    setUpdatingClientIds(prev => new Set(prev).add(clientId));
     try {
-      const [c, cl] = await Promise.all([call('compliances'), call('clients')]);
-      setItems(c.compliances || []);
-      setClients(cl.clients || []);
-    } catch (e) { toast.error(e.message); }
+      const res = await call('compliances/client-matrix', {
+        method: 'PUT',
+        body: { clientId, ...updates, autoCreateTask },
+      });
+      if (res.taskCreated) {
+        toast.success(`⚡ Due review task automatically created for ${res.client?.name || 'client'}!`);
+      }
+    } catch (e) {
+      toast.error('Failed to update client: ' + e.message);
+      // Revert from server
+      loadData();
+    } finally {
+      setUpdatingClientIds(prev => {
+        const next = new Set(prev);
+        next.delete(clientId);
+        return next;
+      });
+    }
   }
-  useEffect(() => { load(); }, []);
 
-  async function del(id) {
-    if (!confirm('Delete this compliance? It will be removed from all clients.')) return;
-    try { await call(`compliances/${id}`, { method: 'DELETE' }); toast.success('Deleted'); load(); }
-    catch (e) { toast.error(e.message); }
+  // Toggle compliance applicability checkbox for a client
+  function toggleApplicability(client, complianceId) {
+    const currentList = Array.isArray(client.applicableCompliances) ? client.applicableCompliances : [];
+    const hasIt = currentList.includes(complianceId);
+    const updated = hasIt
+      ? currentList.filter(id => id !== complianceId)
+      : [...currentList, complianceId];
+    updateClientSetting(client.id, { applicableCompliances: updated }, false);
   }
+
+  // Quick mark client as reviewed today
+  async function markReviewedToday(client) {
+    try {
+      const res = await call('compliances/mark-reviewed', {
+        method: 'POST',
+        body: { clientId: client.id, reviewedDate: todayStr },
+      });
+      toast.success(`Marked ${client.name} as reviewed today! Next review scheduled for ${res.nextReviewDate}`);
+      setClients(prev => prev.map(cl => {
+        if (cl.id !== client.id) return cl;
+        return {
+          ...cl,
+          lastReviewedOn: todayStr,
+          nextReviewDate: res.nextReviewDate,
+          isReviewDue: false,
+          pendingReviewTask: null,
+        };
+      }));
+    } catch (e) {
+      toast.error('Failed to mark reviewed: ' + e.message);
+    }
+  }
+
+  // Auto-sync/create review tasks for all overdue clients
+  async function syncReviewTasks() {
+    setSyncingTasks(true);
+    try {
+      const res = await call('compliances/sync-review-tasks', { method: 'POST' });
+      if (res.createdCount > 0) {
+        toast.success(`Created ${res.createdCount} automated review tasks for assigned staff!`);
+      } else {
+        toast.info('All clients with assigned staff are up to date. No pending review tasks needed.');
+      }
+      loadData();
+    } catch (e) {
+      toast.error('Failed to sync review tasks: ' + e.message);
+    } finally {
+      setSyncingTasks(false);
+    }
+  }
+
+  // Delete compliance column
+  async function deleteCompliance(comp) {
+    const isStd = comp.isStandard;
+    const msg = isStd
+      ? `Remove standard compliance "${comp.name}"?\n\nIt will be removed as a column in the matrix and unchecked from all clients. You can restore it anytime from "Manage Compliances".`
+      : `Delete compliance column "${comp.name}"?\n\nIt will be removed as a column and unchecked from all clients.`;
+    if (!confirm(msg)) return;
+    try {
+      await call(`compliances/${comp.id}`, { method: 'DELETE' });
+      toast.success(`Compliance column "${comp.name}" removed.`);
+      loadData();
+    } catch (e) {
+      toast.error('Failed to delete compliance: ' + e.message);
+    }
+  }
+
+  // Helper to resolve user name
+  function getUserName(userId) {
+    if (!userId) return 'Unassigned';
+    const u = usersList.find(x => x.id === userId);
+    return u ? u.name : 'Unknown User';
+  }
+
+  // Filter clients for display
+  const filteredClients = useMemo(() => {
+    return clients.filter(cl => {
+      // Search query
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase();
+        const matchesName = (cl.name || '').toLowerCase().includes(q);
+        const matchesCompany = (cl.company || '').toLowerCase().includes(q);
+        const matchesGstin = (cl.gstin || '').toLowerCase().includes(q);
+        const matchesPan = (cl.pan || '').toLowerCase().includes(q);
+        const matchesPhone = (cl.phone || '').toLowerCase().includes(q);
+        if (!matchesName && !matchesCompany && !matchesGstin && !matchesPan && !matchesPhone) {
+          return false;
+        }
+      }
+
+      // Filter by compliance applicability
+      if (filterCompliance !== 'all') {
+        const appList = Array.isArray(cl.applicableCompliances) ? cl.applicableCompliances : [];
+        if (!appList.includes(filterCompliance)) return false;
+      }
+
+      // Filter by review status
+      if (filterStatus === 'due') {
+        if (!cl.isReviewDue) return false;
+      } else if (filterStatus === 'soon') {
+        if (cl.isReviewDue || !cl.nextReviewDate) return false;
+        const diffDays = Math.ceil((new Date(cl.nextReviewDate) - new Date(todayStr)) / (1000 * 60 * 60 * 24));
+        if (diffDays > 7 || diffDays < 0) return false;
+      } else if (filterStatus === 'uptodate') {
+        if (cl.isReviewDue || !cl.nextReviewDate) return false;
+        const diffDays = Math.ceil((new Date(cl.nextReviewDate) - new Date(todayStr)) / (1000 * 60 * 60 * 24));
+        if (diffDays <= 7) return false;
+      } else if (filterStatus === 'unscheduled') {
+        if (cl.lastReviewedOn) return false;
+      }
+
+      // Filter by assignee
+      if (filterAssignee === 'unassigned') {
+        if (cl.complianceAssignedTo || cl.assignedTo) return false;
+      } else if (filterAssignee !== 'all') {
+        if ((cl.complianceAssignedTo || cl.assignedTo) !== filterAssignee) return false;
+      }
+
+      return true;
+    });
+  }, [clients, searchQuery, filterCompliance, filterStatus, filterAssignee, todayStr]);
+
+  // Status computation for badges
+  function getClientReviewStatus(cl) {
+    if (!cl.lastReviewedOn && !cl.nextReviewDate) {
+      return { status: 'unscheduled', label: 'Not Scheduled', variant: 'outline', className: 'text-slate-500 border-slate-300' };
+    }
+    if (cl.isReviewDue) {
+      const diffDays = cl.nextReviewDate
+        ? Math.floor((new Date(todayStr) - new Date(cl.nextReviewDate)) / (1000 * 60 * 60 * 24))
+        : 0;
+      return {
+        status: 'due',
+        label: diffDays > 0 ? `Overdue by ${diffDays}d` : 'Review Due Today',
+        variant: 'destructive',
+        className: 'bg-red-50 text-red-700 border-red-300 animate-pulse font-semibold'
+      };
+    }
+    if (cl.nextReviewDate) {
+      const diffDays = Math.ceil((new Date(cl.nextReviewDate) - new Date(todayStr)) / (1000 * 60 * 60 * 24));
+      if (diffDays <= 7) {
+        return {
+          status: 'soon',
+          label: `Due in ${diffDays}d`,
+          variant: 'outline',
+          className: 'bg-amber-50 text-amber-700 border-amber-300 font-medium'
+        };
+      }
+      return {
+        status: 'uptodate',
+        label: `Due in ${diffDays}d`,
+        variant: 'outline',
+        className: 'bg-emerald-50 text-emerald-700 border-emerald-300 font-medium'
+      };
+    }
+    return { status: 'unknown', label: 'Up to Date', variant: 'outline', className: 'text-slate-500' };
+  }
+
+  // --- EXPORT TO EXCEL IN COMPLIANCE-WISE FORMAT ---
+  async function exportComplianceWiseExcel() {
+    setExporting(true);
+    try {
+      const XLSX = await import('xlsx');
+      const wb = XLSX.utils.book_new();
+
+      // Sheet 1: Master Compliance Matrix
+      const matrixRows = clients.map((cl, idx) => {
+        const statusInfo = getClientReviewStatus(cl);
+        const row = {
+          'S.No': idx + 1,
+          'Client Name': cl.name,
+          'Company / Business': cl.company || '-',
+          'GSTIN': cl.gstin || '-',
+          'PAN': cl.pan || '-',
+          'Phone': cl.phone || '-',
+          'Email': cl.email || '-',
+          'Assigned Staff': getUserName(cl.complianceAssignedTo || cl.assignedTo),
+          'Last Reviewed On': cl.lastReviewedOn || 'Never',
+          'Review Interval (Months)': cl.autoReviewPeriodMonths || 3,
+          'Next Review Due Date': cl.nextReviewDate || '-',
+          'Review Status': statusInfo.label,
+        };
+
+        // Add each compliance column with YES/NO
+        compliances.forEach(comp => {
+          const isApp = Array.isArray(cl.applicableCompliances) && cl.applicableCompliances.includes(comp.id);
+          row[comp.name] = isApp ? 'YES' : 'NO';
+        });
+
+        row['Total Applicable Compliances'] = (cl.applicableCompliances || []).length;
+        return row;
+      });
+
+      const wsMatrix = XLSX.utils.json_to_sheet(matrixRows.length ? matrixRows : [{ Notice: 'No clients found' }]);
+      XLSX.utils.book_append_sheet(wb, wsMatrix, 'Compliance Matrix');
+
+      // Sheet 2: Compliance-Wise Master (Rows grouped compliance-wise)
+      const compWiseRows = [];
+      compliances.forEach(comp => {
+        const appClients = clients.filter(cl => Array.isArray(cl.applicableCompliances) && cl.applicableCompliances.includes(comp.id));
+        if (appClients.length === 0) {
+          compWiseRows.push({
+            'Compliance Name': comp.name,
+            'Frequency': comp.frequency || 'Monthly',
+            'Applicable Clients Count': 0,
+            'Client Name': '-',
+            'Company': '-',
+            'GSTIN': '-',
+            'Assigned Staff': '-',
+            'Last Reviewed': '-',
+            'Next Review Due': '-',
+            'Review Status': 'No clients assigned',
+          });
+        } else {
+          appClients.forEach(cl => {
+            const statusInfo = getClientReviewStatus(cl);
+            compWiseRows.push({
+              'Compliance Name': comp.name,
+              'Frequency': comp.frequency || 'Monthly',
+              'Applicable Clients Count': appClients.length,
+              'Client Name': cl.name,
+              'Company': cl.company || '-',
+              'GSTIN': cl.gstin || '-',
+              'Contact Phone': cl.phone || '-',
+              'Assigned Staff': getUserName(cl.complianceAssignedTo || cl.assignedTo),
+              'Last Reviewed': cl.lastReviewedOn || 'Never',
+              'Next Review Due': cl.nextReviewDate || '-',
+              'Review Status': statusInfo.label,
+            });
+          });
+        }
+      });
+
+      const wsCompWise = XLSX.utils.json_to_sheet(compWiseRows.length ? compWiseRows : [{ Notice: 'No compliance records' }]);
+      XLSX.utils.book_append_sheet(wb, wsCompWise, 'Compliance Wise Master');
+
+      // Sheets 3..N: Individual Sheet for EACH compliance
+      compliances.forEach(comp => {
+        const cleanSheetName = comp.name.replace(/[:\\/?*\[\]]/g, '').slice(0, 28);
+        const appClients = clients.filter(cl => Array.isArray(cl.applicableCompliances) && cl.applicableCompliances.includes(comp.id));
+        const rows = appClients.map((cl, idx) => {
+          const statusInfo = getClientReviewStatus(cl);
+          return {
+            'S.No': idx + 1,
+            'Client Name': cl.name,
+            'Company': cl.company || '-',
+            'GSTIN': cl.gstin || '-',
+            'PAN': cl.pan || '-',
+            'Phone': cl.phone || '-',
+            'Email': cl.email || '-',
+            'Assigned Staff': getUserName(cl.complianceAssignedTo || cl.assignedTo),
+            'Last Reviewed On': cl.lastReviewedOn || 'Never',
+            'Review Interval': `${cl.autoReviewPeriodMonths || 3} months`,
+            'Next Review Due': cl.nextReviewDate || '-',
+            'Review Status': statusInfo.label,
+          };
+        });
+
+        const ws = XLSX.utils.json_to_sheet(rows.length ? rows : [{ Notice: `No clients marked applicable for ${comp.name}` }]);
+        XLSX.utils.book_append_sheet(wb, ws, cleanSheetName);
+      });
+
+      XLSX.writeFile(wb, `Compliances_Master_Report_${todayStr}.xlsx`);
+      toast.success('Compliance-wise Excel report downloaded successfully!');
+    } catch (e) {
+      toast.error('Excel export failed: ' + e.message);
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  // Quick export single compliance's clients
+  async function exportSingleCompliance(comp) {
+    try {
+      const XLSX = await import('xlsx');
+      const wb = XLSX.utils.book_new();
+      const appClients = clients.filter(cl => Array.isArray(cl.applicableCompliances) && cl.applicableCompliances.includes(comp.id));
+      const rows = appClients.map((cl, idx) => {
+        const statusInfo = getClientReviewStatus(cl);
+        return {
+          'S.No': idx + 1,
+          'Client Name': cl.name,
+          'Company': cl.company || '-',
+          'GSTIN': cl.gstin || '-',
+          'PAN': cl.pan || '-',
+          'Phone': cl.phone || '-',
+          'Email': cl.email || '-',
+          'Assigned Staff': getUserName(cl.complianceAssignedTo || cl.assignedTo),
+          'Last Reviewed On': cl.lastReviewedOn || 'Never',
+          'Next Review Due Date': cl.nextReviewDate || '-',
+          'Review Status': statusInfo.label,
+        };
+      });
+
+      const ws = XLSX.utils.json_to_sheet(rows.length ? rows : [{ Notice: `No clients applicable for ${comp.name}` }]);
+      XLSX.utils.book_append_sheet(wb, ws, comp.name.slice(0, 28));
+      XLSX.writeFile(wb, `${comp.name.replace(/\s+/g, '_')}_Applicable_Clients_${todayStr}.xlsx`);
+      toast.success(`Exported ${appClients.length} clients for ${comp.name}`);
+    } catch (e) {
+      toast.error('Export failed: ' + e.message);
+    }
+  }
+
+  // Count due clients
+  const dueCount = useMemo(() => {
+    return clients.filter(c => c.isReviewDue).length;
+  }, [clients]);
 
   return (
-    <div className="space-y-4">
-      <PageHeader
-        title="Compliances"
-        subtitle={`${items.length} compliance types — click to see applicable clients`}
-        action={<Button onClick={() => { setEditing(null); setOpen(true); }}><Plus className="w-4 h-4 mr-2" />New Compliance</Button>}
-      />
-      <Card>
-        <CardContent className="pt-4">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <SortableHeader label="Compliance" field="name" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} />
-                <SortableHeader label="Frequency" field="frequency" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} />
-                <SortableHeader label="Applicable Clients" field="clientCount" currentField={sortField} currentOrder={sortOrder} onSort={handleSort} className="text-right" />
-                <TableHead className="text-right">Actions</TableHead>
+    <div className="space-y-5">
+      {/* Top Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900 flex items-center gap-2">
+            <ClipboardCheck className="w-7 h-7 text-indigo-600" />
+            Compliances Matrix & Periodic Review
+          </h1>
+          <p className="text-sm text-slate-500 mt-1">
+            Client-wise applicability tracking, periodic review scheduling & automated review task generation
+          </p>
+        </div>
+        <div className="flex items-center flex-wrap gap-2">
+          {dueCount > 0 && (
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={syncReviewTasks}
+              disabled={syncingTasks}
+              className="shadow-sm animate-pulse"
+              title="Automatically create tasks for all clients due for review"
+            >
+              {syncingTasks ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <CalendarClock className="w-4 h-4 mr-1" />}
+              ⚡ Auto-Create Due Tasks ({dueCount})
+            </Button>
+          )}
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={exportComplianceWiseExcel}
+            disabled={exporting}
+            className="border-emerald-300 text-emerald-800 hover:bg-emerald-50 shadow-sm"
+            title="Download multi-sheet compliance-wise workbook"
+          >
+            {exporting ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <FileSpreadsheet className="w-4 h-4 mr-1 text-emerald-600" />}
+            Export Excel (Compliance-Wise)
+          </Button>
+
+          {canManageCompliances && (
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setManageCompliancesModalOpen(true)}
+                className="border-slate-300 text-slate-700 hover:bg-slate-50 shadow-sm"
+                title="Manage all standard & custom compliances, remove or restore columns"
+              >
+                <SlidersHorizontal className="w-4 h-4 mr-1 text-slate-600" />
+                Manage Compliances
+              </Button>
+
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => { setEditingCompliance(null); setColumnModalOpen(true); }}
+                className="border-indigo-300 text-indigo-700 hover:bg-indigo-50 shadow-sm"
+              >
+                <Plus className="w-4 h-4 mr-1 text-indigo-600" />
+                + Add Compliance Column
+              </Button>
+            </>
+          )}
+
+          <Button
+            size="sm"
+            onClick={() => setAddClientModalOpen(true)}
+            className="bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm"
+          >
+            <Plus className="w-4 h-4 mr-1" />
+            + Add Client
+          </Button>
+        </div>
+      </div>
+
+      {/* KPI Cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+        <Card className="p-3 bg-white shadow-sm border border-slate-200">
+          <div className="text-xs font-medium text-slate-500 uppercase">Clients Tracked</div>
+          <div className="text-2xl font-bold text-slate-900 mt-1">{clients.length}</div>
+          <div className="text-[11px] text-slate-400 mt-0.5">Rows in matrix</div>
+        </Card>
+
+        <Card className="p-3 bg-white shadow-sm border border-slate-200">
+          <div className="text-xs font-medium text-slate-500 uppercase">Compliances</div>
+          <div className="text-2xl font-bold text-indigo-600 mt-1">{compliances.length}</div>
+          <div className="text-[11px] text-slate-400 mt-0.5">Active column types</div>
+        </Card>
+
+        <Card
+          className={`p-3 bg-white shadow-sm border cursor-pointer transition-all ${filterStatus === 'due' ? 'border-red-500 ring-2 ring-red-200' : 'border-slate-200 hover:border-red-300'}`}
+          onClick={() => setFilterStatus(filterStatus === 'due' ? 'all' : 'due')}
+          title="Click to filter due clients"
+        >
+          <div className="text-xs font-medium text-red-600 uppercase flex items-center justify-between">
+            <span>Due for Review</span>
+            <AlertTriangle className="w-3.5 h-3.5 text-red-500" />
+          </div>
+          <div className="text-2xl font-bold text-red-600 mt-1">{dueCount}</div>
+          <div className="text-[11px] text-red-500 mt-0.5">
+            {dueCount > 0 ? 'Next review date <= today' : 'All up to date'}
+          </div>
+        </Card>
+
+        <Card
+          className={`p-3 bg-white shadow-sm border cursor-pointer transition-all ${filterStatus === 'soon' ? 'border-amber-500 ring-2 ring-amber-200' : 'border-slate-200 hover:border-amber-300'}`}
+          onClick={() => setFilterStatus(filterStatus === 'soon' ? 'all' : 'soon')}
+          title="Click to filter due soon clients"
+        >
+          <div className="text-xs font-medium text-amber-600 uppercase flex items-center justify-between">
+            <span>Due in &lt; 7 Days</span>
+            <Clock className="w-3.5 h-3.5 text-amber-500" />
+          </div>
+          <div className="text-2xl font-bold text-amber-600 mt-1">
+            {clients.filter(cl => {
+              if (cl.isReviewDue || !cl.nextReviewDate) return false;
+              const d = Math.ceil((new Date(cl.nextReviewDate) - new Date(todayStr)) / (1000 * 60 * 60 * 24));
+              return d <= 7 && d >= 0;
+            }).length}
+          </div>
+          <div className="text-[11px] text-amber-600 mt-0.5">Upcoming reviews</div>
+        </Card>
+
+        <Card
+          className={`p-3 bg-white shadow-sm border cursor-pointer transition-all ${filterStatus === 'uptodate' ? 'border-emerald-500 ring-2 ring-emerald-200' : 'border-slate-200 hover:border-emerald-300'}`}
+          onClick={() => setFilterStatus(filterStatus === 'uptodate' ? 'all' : 'uptodate')}
+          title="Click to filter up-to-date clients"
+        >
+          <div className="text-xs font-medium text-emerald-600 uppercase flex items-center justify-between">
+            <span>Up to Date</span>
+            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+          </div>
+          <div className="text-2xl font-bold text-emerald-600 mt-1">
+            {clients.filter(cl => {
+              if (cl.isReviewDue || !cl.nextReviewDate) return false;
+              const d = Math.ceil((new Date(cl.nextReviewDate) - new Date(todayStr)) / (1000 * 60 * 60 * 24));
+              return d > 7;
+            }).length}
+          </div>
+          <div className="text-[11px] text-emerald-600 mt-0.5">Within validity</div>
+        </Card>
+      </div>
+
+      {/* Review Due Alert Banner */}
+      {dueCount > 0 && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-3.5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-sm">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-full bg-red-100 flex items-center justify-center shrink-0">
+              <AlertTriangle className="w-5 h-5 text-red-600" />
+            </div>
+            <div>
+              <div className="font-semibold text-red-900 text-sm">
+                {dueCount} client{dueCount > 1 ? 's are' : ' is'} due for periodic compliance review
+              </div>
+              <div className="text-xs text-red-700 mt-0.5">
+                The next review date has arrived or passed today. Generate tasks to assign the review to the designated staff member.
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 self-end sm:self-center">
+            <Button
+              size="sm"
+              variant="outline"
+              className="text-red-700 border-red-300 hover:bg-red-100 text-xs"
+              onClick={() => setFilterStatus('due')}
+            >
+              Filter Due ({dueCount})
+            </Button>
+            <Button
+              size="sm"
+              className="bg-red-600 hover:bg-red-700 text-white text-xs font-medium shadow-sm"
+              onClick={syncReviewTasks}
+              disabled={syncingTasks}
+            >
+              {syncingTasks ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <CalendarClock className="w-3.5 h-3.5 mr-1" />}
+              Auto-Create Review Tasks
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Search & Filter Toolbar */}
+      <Card className="p-3.5 bg-white shadow-sm border border-slate-200">
+        <div className="flex flex-col md:flex-row items-stretch md:items-center gap-3 justify-between">
+          <div className="flex flex-1 items-center gap-2">
+            <div className="relative flex-1 max-w-sm">
+              <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
+              <Input
+                placeholder="Search clients, company, GSTIN, PAN..."
+                className="pl-9 h-9 text-sm"
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+              />
+            </div>
+
+            <Select value={filterCompliance} onValueChange={setFilterCompliance}>
+              <SelectTrigger className="w-[180px] h-9 text-xs">
+                <SelectValue placeholder="All Compliances" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Compliances</SelectItem>
+                {compliances.map(c => (
+                  <SelectItem key={c.id} value={c.id}>
+                    {c.name} ({c.clientCount || 0})
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            <Select value={filterStatus} onValueChange={setFilterStatus}>
+              <SelectTrigger className="w-[170px] h-9 text-xs">
+                <SelectValue placeholder="All Statuses" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Review Statuses</SelectItem>
+                <SelectItem value="due">🔴 Due for Review</SelectItem>
+                <SelectItem value="soon">🟡 Due in &lt; 7 Days</SelectItem>
+                <SelectItem value="uptodate">🟢 Up to Date</SelectItem>
+                <SelectItem value="unscheduled">⚪ Not Scheduled</SelectItem>
+              </SelectContent>
+            </Select>
+
+            <Select value={filterAssignee} onValueChange={setFilterAssignee}>
+              <SelectTrigger className="w-[160px] h-9 text-xs">
+                <SelectValue placeholder="All Assignees" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Assignees</SelectItem>
+                <SelectItem value="unassigned">Unassigned</SelectItem>
+                {usersList.map(u => (
+                  <SelectItem key={u.id} value={u.id}>
+                    {u.name} ({u.role})
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="flex items-center gap-2 justify-end">
+            {(searchQuery || filterCompliance !== 'all' || filterStatus !== 'all' || filterAssignee !== 'all') && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setSearchQuery('');
+                  setFilterCompliance('all');
+                  setFilterStatus('all');
+                  setFilterAssignee('all');
+                }}
+                className="text-xs text-slate-500 hover:text-slate-900"
+              >
+                Reset Filters
+              </Button>
+            )}
+
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={loadData}
+              disabled={loading}
+              className="h-9 text-xs"
+              title="Refresh matrix data"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 mr-1 ${loading ? 'animate-spin' : ''}`} />
+              Refresh
+            </Button>
+          </div>
+        </div>
+      </Card>
+
+      {/* The Matrix Table */}
+      <Card className="border border-slate-200 shadow-sm overflow-hidden bg-white">
+        <div className="overflow-x-auto max-h-[calc(100vh-320px)] overflow-y-auto">
+          <Table className="relative w-full border-collapse">
+            <TableHeader className="bg-slate-100 sticky top-0 z-20 shadow-sm">
+              <TableRow className="border-b border-slate-200 hover:bg-slate-100">
+                <TableHead className="w-12 text-center text-xs font-semibold text-slate-600 bg-slate-100 sticky left-0 z-30 border-r border-slate-200">
+                  #
+                </TableHead>
+                <TableHead className="min-w-[220px] text-xs font-semibold text-slate-700 bg-slate-100 sticky left-12 z-30 border-r border-slate-200">
+                  Client & Business
+                </TableHead>
+
+                {/* Dynamic Compliance Column Headers */}
+                {compliances.map((comp) => (
+                  <TableHead
+                    key={comp.id}
+                    className="min-w-[130px] text-center px-2 py-3 border-r border-slate-200 bg-slate-100"
+                  >
+                    <div className="flex flex-col items-center justify-center gap-1">
+                      <div className="flex items-center gap-1 font-semibold text-slate-800 text-xs">
+                        <span>{comp.name}</span>
+                        {comp.frequency && (
+                          <span className="text-[10px] px-1.5 py-0.2 bg-indigo-50 text-indigo-700 rounded font-normal capitalize">
+                            {comp.frequency}
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1.5 text-[11px] text-slate-500">
+                        <span className="font-medium text-slate-600">
+                          {comp.clientCount || 0} clients
+                        </span>
+                        <div className="flex items-center gap-0.5">
+                          <button
+                            type="button"
+                            onClick={() => exportSingleCompliance(comp)}
+                            title={`Export ${comp.name} clients to Excel`}
+                            className="p-1 hover:text-emerald-600 rounded"
+                          >
+                            <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+                          </button>
+                          {canManageCompliances && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => { setEditingCompliance(comp); setColumnModalOpen(true); }}
+                                title="Edit compliance details"
+                                className="p-1 hover:text-indigo-600 rounded"
+                              >
+                                <Edit className="w-3 h-3 text-slate-400" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => deleteCompliance(comp)}
+                                title="Delete compliance column"
+                                className="p-1 hover:text-red-600 rounded"
+                              >
+                                <Trash2 className="w-3 h-3 text-red-400" />
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </TableHead>
+                ))}
+
+                <TableHead className="min-w-[180px] text-xs font-semibold text-slate-700 border-r border-slate-200 bg-slate-100">
+                  Assigned To
+                </TableHead>
+                <TableHead className="min-w-[160px] text-xs font-semibold text-slate-700 border-r border-slate-200 bg-slate-100">
+                  Last Reviewed On
+                </TableHead>
+                <TableHead className="min-w-[150px] text-xs font-semibold text-slate-700 border-r border-slate-200 bg-slate-100">
+                  Auto Review Period
+                </TableHead>
+                <TableHead className="min-w-[170px] text-xs font-semibold text-slate-700 border-r border-slate-200 bg-slate-100">
+                  Next Review Due
+                </TableHead>
+                <TableHead className="min-w-[130px] text-right text-xs font-semibold text-slate-700 bg-slate-100">
+                  Actions
+                </TableHead>
               </TableRow>
             </TableHeader>
+
             <TableBody>
-              {sortedItems.map(c => (
-                <>
-                  <TableRow key={c.id} className="hover:bg-slate-50 cursor-pointer" onClick={() => setExpanded(expanded === c.id ? null : c.id)}>
-                    <TableCell>
-                      <div className="font-medium text-indigo-600">{c.name}</div>
-                      {c.description && <div className="text-xs text-slate-500">{c.description}</div>}
-                    </TableCell>
-                    <TableCell><Badge variant="outline" className="capitalize">{c.frequency || '-'}</Badge></TableCell>
-                    <TableCell className="text-right font-semibold">{c.clientCount}</TableCell>
-                    <TableCell className="text-right">
-                      <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); setAssignOpen(c); }} title="Manage applicable clients">
-                        <ClipboardCheck className="w-4 h-4 text-emerald-600" />
-                      </Button>
-                      <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); setEditing(c); setOpen(true); }}><Edit className="w-4 h-4" /></Button>
-                      <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); del(c.id); }}><Trash2 className="w-4 h-4 text-red-500" /></Button>
-                    </TableCell>
-                  </TableRow>
-                  {expanded === c.id && (
-                    <TableRow>
-                      <TableCell colSpan={4} className="bg-slate-50">
-                        {c.applicableClients.length === 0 ? (
-                          <div className="text-sm text-slate-500 py-2">No clients have been marked applicable. Click 📋 icon above to assign clients.</div>
-                        ) : (
-                          <div className="py-2">
-                             <div className="text-sm font-semibold mb-2">Clients applicable for {c.name}:</div>
-                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
-                              {c.applicableClients.map(cl => (
-                                <div key={cl.id} className="bg-white border rounded p-2 text-sm">
-                                  <div className="font-medium">{cl.name}</div>
-                                  {cl.company && <div className="text-xs text-slate-500">{cl.company}</div>}
-                                  {cl.gstin && <div className="text-[10px] font-mono text-slate-500">GSTIN: {cl.gstin}</div>}
-                                </div>
-                              ))}
-                            </div>
-                            <div className="mt-2 text-right">
-                              <Button size="sm" variant="outline" onClick={() => exportToExcel(c.applicableClients.map(cl => ({ Name: cl.name, Company: cl.company, GSTIN: cl.gstin })), `${c.name.replace(/\s+/g,'_')}_clients.xlsx`)}>
-                                <FileSpreadsheet className="w-4 h-4 mr-2" />Export List
-                              </Button>
-                            </div>
+              {loading ? (
+                <TableRow>
+                  <TableCell colSpan={compliances.length + 6} className="h-48 text-center text-slate-500">
+                    <Loader2 className="w-6 h-6 animate-spin mx-auto text-indigo-600 mb-2" />
+                    Loading compliance matrix...
+                  </TableCell>
+                </TableRow>
+              ) : filteredClients.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={compliances.length + 6} className="h-48 text-center text-slate-500">
+                    <div className="max-w-md mx-auto space-y-2">
+                      <ClipboardCheck className="w-10 h-10 mx-auto text-slate-300" />
+                      <div className="font-semibold text-slate-700">No matching clients found</div>
+                      <p className="text-xs text-slate-400">
+                        {clients.length === 0
+                          ? 'Add your first client to start tracking applicability and periodic reviews.'
+                          : 'Try adjusting your search query or filters above.'}
+                      </p>
+                      {clients.length === 0 && (
+                        <Button size="sm" onClick={() => setAddClientModalOpen(true)} className="mt-2">
+                          <Plus className="w-4 h-4 mr-1" /> Add Client
+                        </Button>
+                      )}
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ) : (
+                filteredClients.map((client, index) => {
+                  const statusInfo = getClientReviewStatus(client);
+                  const isUpdating = updatingClientIds.has(client.id);
+                  const appCount = (client.applicableCompliances || []).length;
+
+                  return (
+                    <TableRow
+                      key={client.id}
+                      className={`border-b border-slate-100 hover:bg-slate-50/80 transition-colors ${client.isReviewDue ? 'bg-red-50/20' : ''}`}
+                    >
+                      {/* S.No */}
+                      <TableCell className="text-center text-xs text-slate-500 font-mono sticky left-0 z-10 bg-white border-r border-slate-200">
+                        {index + 1}
+                      </TableCell>
+
+                      {/* Client Info (Sticky Column) */}
+                      <TableCell className="sticky left-12 z-10 bg-white border-r border-slate-200 py-2.5">
+                        <div className="flex flex-col">
+                          <div className="font-semibold text-slate-900 text-sm flex items-center gap-1.5">
+                            <span>{client.name}</span>
+                            <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4 bg-slate-50 text-slate-600 border-slate-200 font-normal">
+                              {appCount}/{compliances.length}
+                            </Badge>
                           </div>
-                        )}
+                          {client.company && (
+                            <div className="text-xs text-slate-500 truncate max-w-[200px]">
+                              {client.company}
+                            </div>
+                          )}
+                          <div className="flex items-center gap-2 mt-0.5 text-[11px] text-slate-400 font-mono">
+                            {client.gstin && <span>GST: {client.gstin}</span>}
+                            {client.pan && <span>PAN: {client.pan}</span>}
+                          </div>
+                        </div>
+                      </TableCell>
+
+                      {/* Compliance Columns: Interactive Checkboxes */}
+                      {compliances.map((comp) => {
+                        const isApplicable = Array.isArray(client.applicableCompliances) && client.applicableCompliances.includes(comp.id);
+                        return (
+                          <TableCell
+                            key={comp.id}
+                            className={`text-center px-2 py-2 border-r border-slate-100 ${isApplicable ? 'bg-indigo-50/20' : ''}`}
+                          >
+                            <div className="flex items-center justify-center">
+                              <label
+                                className={`flex items-center justify-center w-7 h-7 rounded-md cursor-pointer transition-all ${
+                                  isApplicable
+                                    ? 'bg-indigo-50 border border-indigo-300 text-indigo-700 shadow-xs'
+                                    : 'hover:bg-slate-100 border border-transparent'
+                                }`}
+                                title={`${comp.name} is ${isApplicable ? 'Applicable' : 'Not Applicable'} for ${client.name}. Click to toggle.`}
+                              >
+                                <Checkbox
+                                  checked={isApplicable}
+                                  onCheckedChange={() => toggleApplicability(client, comp.id)}
+                                  className="w-4 h-4 border-slate-300 data-[state=checked]:bg-indigo-600 data-[state=checked]:border-indigo-600"
+                                />
+                              </label>
+                            </div>
+                          </TableCell>
+                        );
+                      })}
+
+                      {/* Column: Assigned To */}
+                      <TableCell className="border-r border-slate-100 py-2">
+                        <Select
+                          value={client.complianceAssignedTo || client.assignedTo || 'unassigned'}
+                          onValueChange={(val) => {
+                            const newAssigned = val === 'unassigned' ? '' : val;
+                            updateClientSetting(client.id, { complianceAssignedTo: newAssigned });
+                          }}
+                        >
+                          <SelectTrigger className="h-8 text-xs bg-white border-slate-200">
+                            <SelectValue placeholder="Assign staff..." />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="unassigned" className="text-slate-400 italic">
+                              Unassigned
+                            </SelectItem>
+                            {usersList.map((u) => (
+                              <SelectItem key={u.id} value={u.id} className="text-xs">
+                                <div className="flex items-center gap-1.5">
+                                  <span className="font-medium">{u.name}</span>
+                                  <span className="text-[10px] text-slate-400 capitalize">({u.role})</span>
+                                </div>
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </TableCell>
+
+                      {/* Column: Last Reviewed On */}
+                      <TableCell className="border-r border-slate-100 py-2">
+                        <div className="flex items-center gap-1.5">
+                          <Input
+                            type="date"
+                            value={client.lastReviewedOn || ''}
+                            onChange={(e) => {
+                              updateClientSetting(client.id, { lastReviewedOn: e.target.value });
+                            }}
+                            className="h-8 text-xs font-mono px-2 bg-white border-slate-200 w-32"
+                          />
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            className="h-8 px-2 text-[11px] text-indigo-600 hover:bg-indigo-50 font-medium"
+                            onClick={() => updateClientSetting(client.id, { lastReviewedOn: todayStr })}
+                            title="Set last reviewed to today"
+                          >
+                            Today
+                          </Button>
+                        </div>
+                      </TableCell>
+
+                      {/* Column: Auto Review Period in Months */}
+                      <TableCell className="border-r border-slate-100 py-2">
+                        <Select
+                          value={String(client.autoReviewPeriodMonths || 3)}
+                          onValueChange={(val) => {
+                            updateClientSetting(client.id, { autoReviewPeriodMonths: Number(val) });
+                          }}
+                        >
+                          <SelectTrigger className="h-8 text-xs bg-white border-slate-200">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="1">1 Month (Monthly)</SelectItem>
+                            <SelectItem value="2">2 Months (Bi-monthly)</SelectItem>
+                            <SelectItem value="3">3 Months (Quarterly)</SelectItem>
+                            <SelectItem value="6">6 Months (Half-yearly)</SelectItem>
+                            <SelectItem value="12">12 Months (Yearly)</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </TableCell>
+
+                      {/* Column: Next Review Due Date & Status */}
+                      <TableCell className="border-r border-slate-100 py-2">
+                        <div className="flex flex-col gap-1">
+                          <div className="flex items-center gap-1.5">
+                            <Badge variant={statusInfo.variant} className={`text-[11px] px-2 py-0.5 ${statusInfo.className}`}>
+                              {statusInfo.label}
+                            </Badge>
+                          </div>
+                          {client.nextReviewDate && (
+                            <div className="text-[11px] text-slate-500 font-mono">
+                              Due: {new Date(client.nextReviewDate).toLocaleDateString()}
+                            </div>
+                          )}
+                          {client.pendingReviewTask && (
+                            <div className="text-[10px] text-amber-700 font-medium flex items-center gap-1 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
+                              <ClipboardCheck className="w-3 h-3 text-amber-600" />
+                              <span>Review Task Pending</span>
+                            </div>
+                          )}
+                        </div>
+                      </TableCell>
+
+                      {/* Actions Column */}
+                      <TableCell className="text-right py-2">
+                        <div className="flex items-center justify-end gap-1">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => markReviewedToday(client)}
+                            className="h-8 text-xs text-emerald-700 hover:text-emerald-800 hover:bg-emerald-50 px-2"
+                            title="Mark as reviewed today & advance next review date"
+                          >
+                            <Check className="w-3.5 h-3.5 mr-1 text-emerald-600" />
+                            Reviewed
+                          </Button>
+                        </div>
                       </TableCell>
                     </TableRow>
-                  )}
-                </>
-              ))}
-              {!sortedItems.length && <TableRow><TableCell colSpan={4} className="text-center text-slate-500 py-8">No compliances yet. Add one (e.g., &quot;GSTR-3B Monthly&quot;, &quot;Annual Audit&quot;) to start tracking.</TableCell></TableRow>}
+                  );
+                })
+              )}
             </TableBody>
           </Table>
-        </CardContent>
+        </div>
+
+        {/* Footer Summary Bar */}
+        <div className="border-t border-slate-200 px-4 py-3 bg-slate-50 flex flex-col sm:flex-row items-center justify-between text-xs text-slate-500 gap-2">
+          <div>
+            Showing <span className="font-semibold text-slate-700">{filteredClients.length}</span> of <span className="font-semibold text-slate-700">{clients.length}</span> clients across <span className="font-semibold text-slate-700">{compliances.length}</span> compliance categories.
+          </div>
+          <div className="flex items-center gap-4">
+            <span className="flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-full bg-red-500"></span>
+              {dueCount} Due for Review
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
+              {clients.length - dueCount} Up to Date
+            </span>
+          </div>
+        </div>
       </Card>
-      {open && <ComplianceForm initial={editing} onClose={() => { setOpen(false); setEditing(null); }} onSaved={() => { setOpen(false); setEditing(null); load(); }} />}
-      {assignOpen && <ComplianceClientsDialog compliance={assignOpen} clients={clients} onClose={() => setAssignOpen(null)} onSaved={() => { setAssignOpen(null); load(); }} />}
+
+      {/* Modal: Add / Edit Compliance Column */}
+      {columnModalOpen && (
+        <ComplianceColumnDialog
+          initial={editingCompliance}
+          onClose={() => { setColumnModalOpen(false); setEditingCompliance(null); }}
+          onSaved={() => { setColumnModalOpen(false); setEditingCompliance(null); loadData(); }}
+        />
+      )}
+
+      {/* Modal: Manage Compliances & Standard Compliances Library */}
+      {manageCompliancesModalOpen && (
+        <ManageCompliancesDialog
+          compliances={compliances}
+          onClose={() => setManageCompliancesModalOpen(false)}
+          onRefresh={() => loadData()}
+          onEdit={(comp) => {
+            setManageCompliancesModalOpen(false);
+            setEditingCompliance(comp);
+            setColumnModalOpen(true);
+          }}
+          onAddNew={() => {
+            setManageCompliancesModalOpen(false);
+            setEditingCompliance(null);
+            setColumnModalOpen(true);
+          }}
+        />
+      )}
+
+      {/* Modal: Add Client to Compliance Matrix */}
+      {addClientModalOpen && (
+        <AddClientToMatrixDialog
+          compliances={compliances}
+          users={usersList}
+          todayStr={todayStr}
+          onClose={() => setAddClientModalOpen(false)}
+          onSaved={() => { setAddClientModalOpen(false); loadData(); }}
+        />
+      )}
     </div>
   );
 }
 
-function ComplianceForm({ initial, onClose, onSaved }) {
+// Modal: Create or Edit Compliance Column Header
+function ComplianceColumnDialog({ initial, onClose, onSaved }) {
   const { call } = useApi();
-  const [f, setF] = useState(initial || { name: '', description: '', frequency: 'monthly' });
+  const [f, setF] = useState(
+    initial || {
+      name: '',
+      code: '',
+      description: '',
+      frequency: 'monthly',
+      order: 10,
+    }
+  );
   const [saving, setSaving] = useState(false);
-  async function submit(e) {
-    e.preventDefault(); setSaving(true);
+  const [deleting, setDeleting] = useState(false);
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    if (!f.name.trim()) return toast.error('Compliance name is required');
+    setSaving(true);
     try {
-      if (initial) await call(`compliances/${initial.id}`, { method: 'PUT', body: f });
-      else await call('compliances', { method: 'POST', body: f });
-      toast.success(initial ? 'Compliance updated' : 'Compliance added');
+      if (initial) {
+        await call(`compliances/${initial.id}`, { method: 'PUT', body: f });
+        toast.success(`Compliance column "${f.name}" updated`);
+      } else {
+        await call('compliances', { method: 'POST', body: f });
+        toast.success(`Compliance column "${f.name}" added to matrix`);
+      }
       onSaved();
-    } catch (e) { toast.error(e.message); } finally { setSaving(false); }
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setSaving(false);
+    }
   }
+
+  async function handleDelete() {
+    if (!initial) return;
+    const isStd = initial.isStandard;
+    const confirmMsg = isStd
+      ? `Are you sure you want to remove the standard compliance "${initial.name}"?\n\nIt will be removed as a column in the matrix and unchecked from all clients. You can restore it anytime from "Manage Compliances".`
+      : `Are you sure you want to delete the compliance column "${initial.name}"?\n\nIt will be removed as a column in the matrix and unchecked from all clients.`;
+    if (!confirm(confirmMsg)) return;
+
+    setDeleting(true);
+    try {
+      await call(`compliances/${initial.id}`, { method: 'DELETE' });
+      toast.success(`Compliance "${initial.name}" removed successfully`);
+      onSaved();
+    } catch (e) {
+      toast.error('Failed to remove compliance: ' + e.message);
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   return (
     <Dialog open onOpenChange={onClose}>
-      <DialogContent className="max-w-md w-[95vw] max-h-[90vh] overflow-y-auto p-4 sm:p-6">
-        <DialogHeader><DialogTitle>{initial ? 'Edit Compliance' : 'New Compliance'}</DialogTitle></DialogHeader>
-        <form onSubmit={submit} className="space-y-3">
-          <Field label="Name * (e.g., GSTR-3B, TDS Quarterly, Annual ITR)">
-            <Input value={f.name} onChange={e => setF({ ...f, name: e.target.value })} required />
+      <DialogContent className="max-w-md w-[95vw] p-5">
+        <DialogHeader>
+          <div className="flex items-center justify-between">
+            <DialogTitle>{initial ? 'Edit Compliance Column' : 'Add Compliance Column'}</DialogTitle>
+            {initial?.isStandard && (
+              <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200 text-[11px] font-normal">
+                Standard Compliance
+              </Badge>
+            )}
+          </div>
+          <DialogDescription>
+            {initial?.isStandard
+              ? 'This is a standard compliance column. You can update its details or remove it from the matrix anytime.'
+              : 'This compliance appears as a column header in the matrix with checkboxes for all clients.'}
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={handleSubmit} className="space-y-3.5 mt-2">
+          <Field label="Compliance Name * (e.g. GST, TDS, ROC / MCA, Advance Tax, PT)">
+            <Input
+              value={f.name}
+              onChange={e => setF({ ...f, name: e.target.value })}
+              placeholder="e.g. GST / GSTR-3B"
+              required
+            />
           </Field>
-          <Field label="Description"><Textarea rows={2} value={f.description} onChange={e => setF({ ...f, description: e.target.value })} /></Field>
-          <Field label="Frequency">
+
+          <Field label="Short Code / Column Label (e.g. GST, TDS, ROC)">
+            <Input
+              value={f.code || ''}
+              onChange={e => setF({ ...f, code: e.target.value.toUpperCase() })}
+              placeholder="e.g. GST"
+            />
+          </Field>
+
+          <Field label="Filing Frequency">
             <Select value={f.frequency} onValueChange={v => setF({ ...f, frequency: v })}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
               <SelectContent>
-                {['one-time', 'daily', 'weekly', 'monthly', 'quarterly', 'half-yearly', 'yearly'].map(s =>
-                  <SelectItem key={s} value={s} className="capitalize">{s}</SelectItem>
-                )}
+                <SelectItem value="monthly">Monthly</SelectItem>
+                <SelectItem value="quarterly">Quarterly</SelectItem>
+                <SelectItem value="half-yearly">Half-Yearly</SelectItem>
+                <SelectItem value="yearly">Yearly / Annual</SelectItem>
+                <SelectItem value="one-time">One-Time / As Applicable</SelectItem>
               </SelectContent>
             </Select>
           </Field>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
-            <Button type="submit" disabled={saving}>{saving ? 'Saving...' : 'Save'}</Button>
+
+          <Field label="Description & Notes">
+            <Textarea
+              rows={2}
+              value={f.description || ''}
+              onChange={e => setF({ ...f, description: e.target.value })}
+              placeholder="Filing rules, applicable forms or statutory requirements..."
+            />
+          </Field>
+
+          <DialogFooter className="mt-4 flex flex-row items-center justify-between gap-2">
+            {initial ? (
+              <Button
+                type="button"
+                variant="destructive"
+                disabled={saving || deleting}
+                onClick={handleDelete}
+                className="bg-red-600 hover:bg-red-700 text-white mr-auto"
+                title="Remove this compliance column"
+              >
+                {deleting ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Trash2 className="w-4 h-4 mr-1" />}
+                Remove Column
+              </Button>
+            ) : <div />}
+            <div className="flex items-center gap-2">
+              <Button type="button" variant="outline" onClick={onClose} disabled={saving || deleting}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={saving || deleting} className="bg-indigo-600 hover:bg-indigo-700">
+                {saving ? 'Saving...' : initial ? 'Update Column' : 'Add Column to Matrix'}
+              </Button>
+            </div>
           </DialogFooter>
         </form>
       </DialogContent>
@@ -7020,68 +8028,724 @@ function ComplianceForm({ initial, onClose, onSaved }) {
   );
 }
 
-function ComplianceClientsDialog({ compliance, clients, onClose, onSaved }) {
+// Modal: Manage Compliances & Standard Compliances Library
+function ManageCompliancesDialog({ compliances, onClose, onRefresh, onEdit, onAddNew }) {
   const { call } = useApi();
-  const initial = new Set(compliance.applicableClients.map(c => c.id));
-  const [selected, setSelected] = useState(initial);
-  const [saving, setSaving] = useState(false);
-  const [q, setQ] = useState('');
+  const [tab, setTab] = useState('active'); // 'active' | 'library'
+  const [busyCode, setBusyCode] = useState(null);
+  const [busyAll, setBusyAll] = useState(false);
 
-  const filtered = clients.filter(c => !q || `${c.name} ${c.company || ''} ${c.gstin || ''}`.toLowerCase().includes(q.toLowerCase()));
+  const STANDARD_LIBRARY = [
+    { code: 'GST', name: 'GST', description: 'GSTR-1, GSTR-3B & Annual GSTR-9 Filings', frequency: 'monthly' },
+    { code: 'TDS', name: 'TDS', description: 'TDS Payment & Quarterly 24Q/26Q/27Q Returns', frequency: 'quarterly' },
+    { code: 'ITR', name: 'Income Tax (ITR)', description: 'Annual Income Tax Return & Tax Audit', frequency: 'yearly' },
+    { code: 'ROC', name: 'ROC / MCA', description: 'AOC-4, MGT-7, DIR-3 KYC & Company Compliances', frequency: 'yearly' },
+    { code: 'PF/ESI', name: 'PF & ESIC', description: 'Monthly PF ECR Challans & ESIC Returns', frequency: 'monthly' },
+    { code: 'ADV_TAX', name: 'Advance Tax', description: 'Quarterly Advance Tax Estimation & Payment', frequency: 'quarterly' },
+    { code: 'AUDIT', name: 'Statutory Audit', description: 'Annual Books Audit & Financials Finalization', frequency: 'yearly' },
+    { code: 'PT', name: 'Professional Tax (PT)', description: 'Monthly/Annual Professional Tax Returns & Challans', frequency: 'monthly' },
+    { code: 'FEMA', name: 'FEMA / RBI', description: 'FLA Return, FC-GPR, APR & Foreign Inward Remittance', frequency: 'yearly' },
+    { code: 'TP', name: 'Transfer Pricing', description: 'Form 3CEB & Transfer Pricing Study Report', frequency: 'yearly' },
+  ];
 
-  function toggle(cid) {
-    const next = new Set(selected);
-    if (next.has(cid)) next.delete(cid); else next.add(cid);
-    setSelected(next);
+  function getActiveStandard(item) {
+    return compliances.find(
+      c => (c.code && c.code.toUpperCase() === item.code.toUpperCase()) ||
+           (c.name && c.name.toLowerCase() === item.name.toLowerCase())
+    );
   }
 
-  async function save() {
+  // Remove a compliance
+  async function handleRemove(comp) {
+    const isStd = comp.isStandard || STANDARD_LIBRARY.some(s => s.code === comp.code);
+    const msg = isStd
+      ? `Remove standard compliance "${comp.name}"?\n\nIt will be removed as a column in the matrix and unchecked from all clients. You can restore it anytime from the Standard Compliances library tab.`
+      : `Delete compliance column "${comp.name}"?\n\nIt will be permanently removed as a column and unchecked from all clients.`;
+    if (!confirm(msg)) return;
+
+    setBusyCode(comp.id);
+    try {
+      await call(`compliances/${comp.id}`, { method: 'DELETE' });
+      toast.success(`Removed "${comp.name}" from compliance matrix.`);
+      onRefresh();
+    } catch (e) {
+      toast.error('Failed to remove: ' + e.message);
+    } finally {
+      setBusyCode(null);
+    }
+  }
+
+  // Restore/Add a standard compliance
+  async function handleAddStandard(std) {
+    setBusyCode(std.code);
+    try {
+      await call('compliances/restore-standard', { method: 'POST', body: { code: std.code } });
+      toast.success(`Standard compliance "${std.name}" added to matrix.`);
+      onRefresh();
+    } catch (e) {
+      toast.error('Failed to add: ' + e.message);
+    } finally {
+      setBusyCode(null);
+    }
+  }
+
+  // Remove all standard compliances
+  async function handleRemoveAllStandard() {
+    if (!confirm('Remove ALL standard compliances from your matrix?\n\nThis will remove GST, TDS, ITR, ROC, PF & ESIC, Advance Tax, Statutory Audit etc. from your matrix columns. Any custom columns you created will remain.')) return;
+    setBusyAll(true);
+    try {
+      const res = await call('compliances/all-standard', { method: 'DELETE' });
+      toast.success(`Removed ${res.deletedCount || 'all'} standard compliances.`);
+      onRefresh();
+    } catch (e) {
+      toast.error('Failed to remove: ' + e.message);
+    } finally {
+      setBusyAll(false);
+    }
+  }
+
+  // Restore all standard compliances
+  async function handleRestoreAllStandard() {
+    setBusyAll(true);
+    try {
+      const res = await call('compliances/restore-standard', { method: 'POST', body: {} });
+      toast.success(`Restored standard compliances (${res.addedCount || 'all'} added to matrix).`);
+      onRefresh();
+    } catch (e) {
+      toast.error('Failed to restore: ' + e.message);
+    } finally {
+      setBusyAll(false);
+    }
+  }
+
+  const standardCompliancesInMatrix = compliances.filter(c => c.isStandard || STANDARD_LIBRARY.some(s => s.code === c.code));
+
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent className="max-w-3xl w-[95vw] p-5 max-h-[90vh] flex flex-col">
+        <DialogHeader>
+          <div className="flex items-center justify-between">
+            <DialogTitle className="flex items-center gap-2">
+              <SlidersHorizontal className="w-5 h-5 text-indigo-600" />
+              Manage Compliances & Column Library
+            </DialogTitle>
+          </div>
+          <DialogDescription>
+            Configure active compliance columns, remove standard or custom compliances, and add standard compliance templates with one click.
+          </DialogDescription>
+        </DialogHeader>
+
+        {/* Tab Switcher & Quick Actions */}
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-slate-200 pb-3 pt-2">
+          <div className="flex items-center gap-2">
+            <Button
+              variant={tab === 'active' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setTab('active')}
+              className={tab === 'active' ? 'bg-indigo-600 text-white' : ''}
+            >
+              Active Columns ({compliances.length})
+            </Button>
+            <Button
+              variant={tab === 'library' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setTab('library')}
+              className={tab === 'library' ? 'bg-indigo-600 text-white' : ''}
+            >
+              Standard Compliances Library ({STANDARD_LIBRARY.length})
+            </Button>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {tab === 'active' && standardCompliancesInMatrix.length > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleRemoveAllStandard}
+                disabled={busyAll}
+                className="text-red-700 border-red-200 hover:bg-red-50 text-xs"
+                title="Remove all standard compliances from matrix"
+              >
+                {busyAll ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <Trash2 className="w-3.5 h-3.5 mr-1 text-red-500" />}
+                Remove All Standard
+              </Button>
+            )}
+            {tab === 'library' && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleRestoreAllStandard}
+                disabled={busyAll}
+                className="text-indigo-700 border-indigo-200 hover:bg-indigo-50 text-xs"
+                title="Restore all 10 standard compliances to matrix"
+              >
+                {busyAll ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5 mr-1 text-indigo-500" />}
+                Restore All Standard
+              </Button>
+            )}
+            <Button
+              size="sm"
+              onClick={onAddNew}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs"
+            >
+              <Plus className="w-3.5 h-3.5 mr-1" />
+              + Custom Column
+            </Button>
+          </div>
+        </div>
+
+        {/* Tab Content */}
+        <div className="flex-1 overflow-y-auto py-3 space-y-3">
+          {tab === 'active' && (
+            <div className="space-y-2.5">
+              {compliances.length === 0 ? (
+                <div className="p-8 text-center border border-dashed rounded-lg text-slate-500 space-y-2">
+                  <ClipboardCheck className="w-8 h-8 mx-auto text-slate-300" />
+                  <div className="font-semibold text-slate-700">No active compliance columns</div>
+                  <p className="text-xs text-slate-400">
+                    All compliance columns have been removed. You can restore standard compliances from the Library tab or add a custom column.
+                  </p>
+                  <Button size="sm" onClick={handleRestoreAllStandard} className="mt-2 bg-indigo-600 text-white">
+                    <RotateCcw className="w-3.5 h-3.5 mr-1" /> Restore Standard Compliances
+                  </Button>
+                </div>
+              ) : (
+                compliances.map((comp) => {
+                  const isStd = comp.isStandard || STANDARD_LIBRARY.some(s => s.code === comp.code);
+                  const isBusy = busyCode === comp.id;
+
+                  return (
+                    <div
+                      key={comp.id}
+                      className="flex flex-col sm:flex-row sm:items-center justify-between p-3 rounded-lg border border-slate-200 bg-white hover:border-slate-300 shadow-sm gap-2"
+                    >
+                      <div className="space-y-0.5">
+                        <div className="flex items-center gap-2">
+                          <span className="font-semibold text-slate-900 text-sm">{comp.name}</span>
+                          {comp.code && (
+                            <Badge variant="outline" className="font-mono text-[10px] px-1.5 py-0 bg-slate-50 text-slate-700">
+                              {comp.code}
+                            </Badge>
+                          )}
+                          {isStd ? (
+                            <Badge variant="outline" className="text-[10px] px-1.5 py-0 bg-blue-50 text-blue-700 border-blue-200">
+                              Standard Compliance
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline" className="text-[10px] px-1.5 py-0 bg-purple-50 text-purple-700 border-purple-200">
+                              Custom Column
+                            </Badge>
+                          )}
+                          <span className="text-[11px] text-slate-400 capitalize">• {comp.frequency || 'Monthly'}</span>
+                        </div>
+                        <div className="text-xs text-slate-500 line-clamp-1">
+                          {comp.description || 'No description provided'}
+                        </div>
+                        <div className="text-[11px] text-slate-400">
+                          Applied to <span className="font-semibold text-slate-600">{comp.clientCount || 0}</span> clients
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 self-end sm:self-center">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => onEdit(comp)}
+                          className="h-8 text-xs text-slate-700"
+                        >
+                          <Edit className="w-3.5 h-3.5 mr-1" />
+                          Edit
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          onClick={() => handleRemove(comp)}
+                          disabled={isBusy || busyAll}
+                          className="h-8 text-xs bg-red-50 text-red-700 border border-red-200 hover:bg-red-100 hover:text-red-800"
+                          title={isStd ? "Remove standard compliance" : "Delete custom compliance"}
+                        >
+                          {isBusy ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <Trash2 className="w-3.5 h-3.5 mr-1 text-red-600" />}
+                          Remove
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          )}
+
+          {tab === 'library' && (
+            <div className="space-y-3">
+              <div className="bg-slate-50 p-3 rounded-lg border border-slate-200 text-xs text-slate-600 flex items-start gap-2">
+                <CheckCircle2 className="w-4 h-4 text-indigo-600 shrink-0 mt-0.5" />
+                <div>
+                  <strong>Standard Compliances Library:</strong> Recognized statutory and regulatory compliance categories for Chartered Accountants and tax consultants. You can remove standard compliances whenever you want, and restore them with one click.
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                {STANDARD_LIBRARY.map((std) => {
+                  const activeComp = getActiveStandard(std);
+                  const isPresent = !!activeComp;
+                  const isBusy = busyCode === std.code || (activeComp && busyCode === activeComp.id);
+
+                  return (
+                    <div
+                      key={std.code}
+                      className={`p-3 rounded-lg border transition-all ${
+                        isPresent
+                          ? 'bg-emerald-50/20 border-emerald-200'
+                          : 'bg-white border-slate-200 hover:border-slate-300'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <div className="flex items-center gap-1.5 font-semibold text-sm text-slate-900">
+                            <span>{std.name}</span>
+                            <Badge variant="outline" className="font-mono text-[10px] px-1.5 py-0 bg-slate-100">
+                              {std.code}
+                            </Badge>
+                            <span className="text-[11px] text-slate-400 font-normal capitalize">• {std.frequency}</span>
+                          </div>
+                          <p className="text-xs text-slate-500 mt-1 line-clamp-2">
+                            {std.description}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between mt-3 pt-2 border-t border-slate-100 text-xs">
+                        {isPresent ? (
+                          <>
+                            <span className="text-emerald-700 font-medium flex items-center gap-1">
+                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                              Active in Matrix ({activeComp.clientCount || 0} clients)
+                            </span>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleRemove(activeComp)}
+                              disabled={isBusy || busyAll}
+                              className="h-7 text-xs text-red-600 border-red-200 hover:bg-red-50 hover:text-red-700"
+                              title="Remove standard compliance from matrix"
+                            >
+                              {isBusy ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <Trash2 className="w-3.5 h-3.5 mr-1" />}
+                              Remove
+                            </Button>
+                          </>
+                        ) : (
+                          <>
+                            <span className="text-slate-400 italic">Not in matrix</span>
+                            <Button
+                              size="sm"
+                              onClick={() => handleAddStandard(std)}
+                              disabled={isBusy || busyAll}
+                              className="h-7 text-xs bg-indigo-600 hover:bg-indigo-700 text-white"
+                            >
+                              {isBusy ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <Plus className="w-3.5 h-3.5 mr-1" />}
+                              Add to Matrix
+                            </Button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <DialogFooter className="border-t border-slate-200 pt-3">
+          <Button type="button" variant="outline" onClick={onClose}>
+            Close
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// Modal: Add Client to Compliance Matrix (create new or add existing)
+function AddClientToMatrixDialog({ compliances, users, todayStr, onClose, onSaved }) {
+  const { call } = useApi();
+  const [mode, setMode] = useState('new'); // 'new' | 'existing'
+  const [existingClients, setExistingClients] = useState([]);
+  const [selectedExistingId, setSelectedExistingId] = useState('');
+  const [loadingExisting, setLoadingExisting] = useState(false);
+
+  // New Client Form
+  const [name, setName] = useState('');
+  const [company, setCompany] = useState('');
+  const [gstin, setGstin] = useState('');
+  const [pan, setPan] = useState('');
+  const [phone, setPhone] = useState('');
+  const [email, setEmail] = useState('');
+  const [assignedTo, setAssignedTo] = useState('');
+  const [lastReviewedOn, setLastReviewedOn] = useState(todayStr);
+  const [autoReviewPeriodMonths, setAutoReviewPeriodMonths] = useState(3);
+  const [applicableCompliances, setApplicableCompliances] = useState([]);
+  const [saving, setSaving] = useState(false);
+
+  // Fetch all existing clients for selection
+  useEffect(() => {
+    async function fetchClients() {
+      setLoadingExisting(true);
+      try {
+        const res = await call('clients?limit=500');
+        setExistingClients(res.clients || []);
+      } catch (e) {
+        console.error(e);
+      } finally {
+        setLoadingExisting(false);
+      }
+    }
+    fetchClients();
+  }, []);
+
+  function toggleComp(id) {
+    setApplicableCompliances(prev =>
+      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+    );
+  }
+
+  async function handleSaveNew(e) {
+    e.preventDefault();
+    if (!name.trim()) return toast.error('Client name is required');
     setSaving(true);
     try {
-      // For each client, set their applicableCompliances list (add or remove this compliance)
-      // We'll do it efficiently: load current value and update
-      for (const cl of clients) {
-        const has = (cl.applicableCompliances || []).includes(compliance.id);
-        const wants = selected.has(cl.id);
-        if (has === wants) continue;
-        const newList = wants
-          ? [...(cl.applicableCompliances || []), compliance.id]
-          : (cl.applicableCompliances || []).filter(x => x !== compliance.id);
-        await call(`clients/${cl.id}`, { method: 'PUT', body: { applicableCompliances: newList } });
+      // 1. Create client
+      const res = await call('clients', {
+        method: 'POST',
+        body: {
+          name: name.trim(),
+          company: company.trim(),
+          gstin: gstin.trim().toUpperCase(),
+          pan: pan.trim().toUpperCase(),
+          phone: phone.trim(),
+          email: email.trim(),
+        },
+      });
+
+      const newClient = res.client;
+      // 2. Set compliance matrix settings for this client
+      if (newClient && newClient.id) {
+        await call('compliances/client-matrix', {
+          method: 'PUT',
+          body: {
+            clientId: newClient.id,
+            applicableCompliances,
+            complianceAssignedTo: assignedTo,
+            lastReviewedOn,
+            autoReviewPeriodMonths: Number(autoReviewPeriodMonths),
+            autoCreateTask: true,
+          },
+        });
       }
-      toast.success(`Updated client list for ${compliance.name}`);
+
+      toast.success(`Client "${name}" added to compliance matrix!`);
       onSaved();
-    } catch (e) { toast.error(e.message); } finally { setSaving(false); }
+    } catch (e) {
+      toast.error('Failed to create client: ' + e.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleAddExisting(e) {
+    e.preventDefault();
+    if (!selectedExistingId) return toast.error('Please select a client');
+    setSaving(true);
+    try {
+      await call('compliances/client-matrix', {
+        method: 'PUT',
+        body: {
+          clientId: selectedExistingId,
+          applicableCompliances,
+          complianceAssignedTo: assignedTo,
+          lastReviewedOn,
+          autoReviewPeriodMonths: Number(autoReviewPeriodMonths),
+          autoCreateTask: true,
+        },
+      });
+      toast.success('Client updated in compliance matrix!');
+      onSaved();
+    } catch (e) {
+      toast.error('Failed to update client: ' + e.message);
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
     <Dialog open onOpenChange={onClose}>
-      <DialogContent className="max-w-lg w-[95vw] max-h-[90vh] overflow-y-auto p-4 sm:p-6">
+      <DialogContent className="max-w-xl w-[95vw] max-h-[90vh] overflow-y-auto p-5">
         <DialogHeader>
-          <DialogTitle>Applicable Clients — {compliance.name}</DialogTitle>
-          <DialogDescription>Tick the clients to which this compliance applies. {selected.size} selected.</DialogDescription>
+          <DialogTitle>Add Client to Compliance Matrix</DialogTitle>
+          <DialogDescription>
+            Register a client with applicable compliances, responsible staff member, and review schedule.
+          </DialogDescription>
         </DialogHeader>
-        <div className="relative">
-          <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
-          <Input className="pl-9" placeholder="Search clients..." value={q} onChange={e => setQ(e.target.value)} />
+
+        {/* Mode selector */}
+        <div className="flex border-b border-slate-200 mt-2">
+          <button
+            type="button"
+            className={`py-2 px-4 text-xs font-semibold border-b-2 transition-colors ${
+              mode === 'new'
+                ? 'border-indigo-600 text-indigo-600'
+                : 'border-transparent text-slate-500 hover:text-slate-800'
+            }`}
+            onClick={() => setMode('new')}
+          >
+            Create New Client
+          </button>
+          <button
+            type="button"
+            className={`py-2 px-4 text-xs font-semibold border-b-2 transition-colors ${
+              mode === 'existing'
+                ? 'border-indigo-600 text-indigo-600'
+                : 'border-transparent text-slate-500 hover:text-slate-800'
+            }`}
+            onClick={() => setMode('existing')}
+          >
+            Configure Existing Client
+          </button>
         </div>
-        <div className="border rounded-md max-h-96 overflow-y-auto">
-          {filtered.length === 0 && <div className="p-4 text-sm text-slate-500 text-center">No clients found.</div>}
-          {filtered.map(cl => (
-            <label key={cl.id} className="flex items-center gap-3 px-3 py-2 border-b last:border-b-0 cursor-pointer hover:bg-slate-50">
-              <input type="checkbox" checked={selected.has(cl.id)} onChange={() => toggle(cl.id)} />
-              <div className="flex-1">
-                <div className="text-sm font-medium">{cl.name}</div>
-                {cl.company && <div className="text-xs text-slate-500">{cl.company}</div>}
+
+        {mode === 'new' ? (
+          <form onSubmit={handleSaveNew} className="space-y-3.5 mt-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Field label="Client / Contact Name *">
+                <Input
+                  value={name}
+                  onChange={e => setName(e.target.value)}
+                  placeholder="e.g. Rajesh Kumar"
+                  required
+                />
+              </Field>
+              <Field label="Company / Entity Name">
+                <Input
+                  value={company}
+                  onChange={e => setCompany(e.target.value)}
+                  placeholder="e.g. Apex Enterprises Pvt Ltd"
+                />
+              </Field>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Field label="GSTIN">
+                <Input
+                  value={gstin}
+                  onChange={e => setGstin(e.target.value.toUpperCase())}
+                  placeholder="27AAAAA0000A1Z5"
+                />
+              </Field>
+              <Field label="PAN">
+                <Input
+                  value={pan}
+                  onChange={e => setPan(e.target.value.toUpperCase())}
+                  placeholder="ABCDE1234F"
+                />
+              </Field>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Field label="Phone">
+                <Input
+                  value={phone}
+                  onChange={e => setPhone(e.target.value)}
+                  placeholder="9876543210"
+                />
+              </Field>
+              <Field label="Email">
+                <Input
+                  value={email}
+                  onChange={e => setEmail(e.target.value)}
+                  placeholder="client@example.com"
+                />
+              </Field>
+            </div>
+
+            <Separator />
+
+            {/* Compliance applicability selection */}
+            <div>
+              <Label className="text-xs font-semibold text-slate-700 mb-1.5 block">
+                Applicable Compliances (Check all that apply to this client):
+              </Label>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 border rounded-md p-2.5 bg-slate-50 max-h-36 overflow-y-auto">
+                {compliances.map(comp => (
+                  <label
+                    key={comp.id}
+                    className="flex items-center gap-2 text-xs font-medium cursor-pointer p-1 rounded hover:bg-white"
+                  >
+                    <Checkbox
+                      checked={applicableCompliances.includes(comp.id)}
+                      onCheckedChange={() => toggleComp(comp.id)}
+                    />
+                    <span>{comp.name}</span>
+                  </label>
+                ))}
               </div>
-              {cl.gstin && <div className="text-[10px] font-mono text-slate-400">{cl.gstin}</div>}
-            </label>
-          ))}
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button onClick={save} disabled={saving}>{saving ? 'Saving...' : 'Save Applicability'}</Button>
-        </DialogFooter>
+            </div>
+
+            {/* Assignment & Review Settings */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <Field label="Assigned Staff Member">
+                <Select value={assignedTo} onValueChange={setAssignedTo}>
+                  <SelectTrigger className="text-xs">
+                    <SelectValue placeholder="Select staff..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {users.map(u => (
+                      <SelectItem key={u.id} value={u.id}>
+                        {u.name} ({u.role})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+
+              <Field label="Last Reviewed On">
+                <Input
+                  type="date"
+                  value={lastReviewedOn}
+                  onChange={e => setLastReviewedOn(e.target.value)}
+                  className="text-xs font-mono"
+                />
+              </Field>
+
+              <Field label="Auto Review Period">
+                <Select
+                  value={String(autoReviewPeriodMonths)}
+                  onValueChange={v => setAutoReviewPeriodMonths(Number(v))}
+                >
+                  <SelectTrigger className="text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="1">1 Month (Monthly)</SelectItem>
+                    <SelectItem value="2">2 Months (Bi-monthly)</SelectItem>
+                    <SelectItem value="3">3 Months (Quarterly)</SelectItem>
+                    <SelectItem value="6">6 Months (Half-yearly)</SelectItem>
+                    <SelectItem value="12">12 Months (Yearly)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+            </div>
+
+            <DialogFooter className="mt-4">
+              <Button type="button" variant="outline" onClick={onClose}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={saving} className="bg-indigo-600 hover:bg-indigo-700">
+                {saving ? 'Creating...' : 'Create & Add to Matrix'}
+              </Button>
+            </DialogFooter>
+          </form>
+        ) : (
+          <form onSubmit={handleAddExisting} className="space-y-3.5 mt-3">
+            <Field label="Select Existing Client *">
+              <Select value={selectedExistingId} onValueChange={(val) => {
+                setSelectedExistingId(val);
+                const cl = existingClients.find(x => x.id === val);
+                if (cl) {
+                  setApplicableCompliances(cl.applicableCompliances || []);
+                  setAssignedTo(cl.complianceAssignedTo || cl.assignedTo || '');
+                  setLastReviewedOn(cl.lastReviewedOn || todayStr);
+                  setAutoReviewPeriodMonths(cl.autoReviewPeriodMonths || 3);
+                }
+              }}>
+                <SelectTrigger className="text-xs">
+                  <SelectValue placeholder="Search or select client..." />
+                </SelectTrigger>
+                <SelectContent className="max-h-60">
+                  {existingClients.map(c => (
+                    <SelectItem key={c.id} value={c.id}>
+                      {c.name} {c.company ? `(${c.company})` : ''} {c.gstin ? `— ${c.gstin}` : ''}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+
+            {/* Compliance applicability selection */}
+            <div>
+              <Label className="text-xs font-semibold text-slate-700 mb-1.5 block">
+                Applicable Compliances:
+              </Label>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 border rounded-md p-2.5 bg-slate-50 max-h-36 overflow-y-auto">
+                {compliances.map(comp => (
+                  <label
+                    key={comp.id}
+                    className="flex items-center gap-2 text-xs font-medium cursor-pointer p-1 rounded hover:bg-white"
+                  >
+                    <Checkbox
+                      checked={applicableCompliances.includes(comp.id)}
+                      onCheckedChange={() => toggleComp(comp.id)}
+                    />
+                    <span>{comp.name}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            {/* Assignment & Review Settings */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <Field label="Assigned Staff">
+                <Select value={assignedTo} onValueChange={setAssignedTo}>
+                  <SelectTrigger className="text-xs">
+                    <SelectValue placeholder="Select staff..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {users.map(u => (
+                      <SelectItem key={u.id} value={u.id}>
+                        {u.name} ({u.role})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+
+              <Field label="Last Reviewed On">
+                <Input
+                  type="date"
+                  value={lastReviewedOn}
+                  onChange={e => setLastReviewedOn(e.target.value)}
+                  className="text-xs font-mono"
+                />
+              </Field>
+
+              <Field label="Auto Review Period">
+                <Select
+                  value={String(autoReviewPeriodMonths)}
+                  onValueChange={v => setAutoReviewPeriodMonths(Number(v))}
+                >
+                  <SelectTrigger className="text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="1">1 Month (Monthly)</SelectItem>
+                    <SelectItem value="2">2 Months (Bi-monthly)</SelectItem>
+                    <SelectItem value="3">3 Months (Quarterly)</SelectItem>
+                    <SelectItem value="6">6 Months (Half-yearly)</SelectItem>
+                    <SelectItem value="12">12 Months (Yearly)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+            </div>
+
+            <DialogFooter className="mt-4">
+              <Button type="button" variant="outline" onClick={onClose}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={saving || !selectedExistingId} className="bg-indigo-600 hover:bg-indigo-700">
+                {saving ? 'Updating...' : 'Save Matrix Settings'}
+              </Button>
+            </DialogFooter>
+          </form>
+        )}
       </DialogContent>
     </Dialog>
   );
