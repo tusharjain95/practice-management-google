@@ -4057,7 +4057,14 @@ async function handle(request, ctx) {
       }
 
       // Fetch all clients of this organization
-      const clients = await db.collection('clients').find({ orgId: me.activeOrgId }).project({ _id: 0 }).sort({ name: 1 }).toArray();
+      const allClients = await db.collection('clients').find({ orgId: me.activeOrgId }).project({ _id: 0 }).sort({ name: 1 }).toArray();
+
+      // Only clients manually enabled with compliances ticked should show in this tab
+      const clients = allClients.filter(cl => {
+        if (cl.complianceEnabled === false) return false;
+        const hasTicked = Array.isArray(cl.applicableCompliances) && cl.applicableCompliances.length > 0;
+        return hasTicked || cl.complianceEnabled === true;
+      });
 
       // Fetch active pending review tasks to map them to clients
       const pendingReviewTasks = await db.collection('tasks').find({
@@ -4134,6 +4141,17 @@ async function handle(request, ctx) {
       return json({
         compliances: items,
         clients,
+        allOrgClients: allClients.map(c => ({
+          id: c.id,
+          name: c.name,
+          company: c.company,
+          gstin: c.gstin,
+          pan: c.pan,
+          phone: c.phone,
+          email: c.email,
+          complianceEnabled: !!c.complianceEnabled,
+          applicableCompliances: c.applicableCompliances || []
+        })),
         users: uniqueUsers,
         stats,
         today: todayStr,
@@ -4183,14 +4201,22 @@ async function handle(request, ctx) {
     // Direct client compliance row updates (Applicability, Assigned To, Last Reviewed, Auto Review Period)
     if ((route === 'compliances/client-matrix' || route.startsWith('compliances/client-matrix')) && (method === 'PUT' || method === 'POST')) {
       const body = await request.json();
-      const { clientId, applicableCompliances, complianceAssignedTo, lastReviewedOn, autoReviewPeriodMonths, autoCreateTask = true } = body;
+      const { clientId, complianceEnabled, applicableCompliances, complianceAssignedTo, lastReviewedOn, autoReviewPeriodMonths, autoCreateTask = true } = body;
       if (!clientId) return json({ error: 'clientId is required' }, 400);
 
       const client = await db.collection('clients').findOne({ id: clientId, orgId: me.activeOrgId });
       if (!client) return json({ error: 'Client not found' }, 404);
 
       const updateFields = { updatedAt: new Date().toISOString() };
-      if (applicableCompliances !== undefined) updateFields.applicableCompliances = Array.isArray(applicableCompliances) ? applicableCompliances : [];
+      if (complianceEnabled !== undefined) {
+        updateFields.complianceEnabled = Boolean(complianceEnabled);
+      }
+      if (applicableCompliances !== undefined) {
+        updateFields.applicableCompliances = Array.isArray(applicableCompliances) ? applicableCompliances : [];
+        if (complianceEnabled === undefined) {
+          updateFields.complianceEnabled = updateFields.applicableCompliances.length > 0;
+        }
+      }
       if (complianceAssignedTo !== undefined) {
         updateFields.complianceAssignedTo = complianceAssignedTo;
         updateFields.assignedTo = complianceAssignedTo || client.assignedTo;
@@ -4210,8 +4236,9 @@ async function handle(request, ctx) {
       const updatedClient = { ...client, ...updateFields };
       let taskResult = { created: false };
 
-      // Auto-create review task if next review date is <= today and autoCreateTask is requested
-      if (autoCreateTask && nextReviewDate && nextReviewDate <= todayStr && (updatedClient.complianceAssignedTo || updatedClient.assignedTo)) {
+      // Auto-create review task if next review date is <= today, client is enabled with compliances, and autoCreateTask is requested
+      const isClientEnabled = updatedClient.complianceEnabled !== false && (updatedClient.complianceEnabled === true || (updatedClient.applicableCompliances?.length > 0));
+      if (isClientEnabled && autoCreateTask && nextReviewDate && nextReviewDate <= todayStr && (updatedClient.complianceAssignedTo || updatedClient.assignedTo)) {
         taskResult = await createReviewTaskIfDue(updatedClient, me, todayStr);
       }
 
@@ -4242,6 +4269,9 @@ async function handle(request, ctx) {
       const createdTasks = [];
 
       for (const cl of clients) {
+        if (cl.complianceEnabled === false) continue;
+        const hasTicked = Array.isArray(cl.applicableCompliances) && cl.applicableCompliances.length > 0;
+        if (!hasTicked && cl.complianceEnabled !== true) continue;
         if (!cl.complianceAssignedTo && !cl.assignedTo) continue;
         const period = Number(cl.autoReviewPeriodMonths) || 3;
         const nextReviewDate = computeNextReviewDate(cl.lastReviewedOn, period, cl.createdAt);

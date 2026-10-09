@@ -163,6 +163,9 @@ async function handleCron(request) {
       }).toArray();
 
       for (const cl of allClientsWithReview) {
+        if (cl.complianceEnabled === false) continue;
+        const hasTicked = Array.isArray(cl.applicableCompliances) && cl.applicableCompliances.length > 0;
+        if (!hasTicked && cl.complianceEnabled !== true) continue;
         const assignedTo = cl.complianceAssignedTo || cl.assignedTo;
         if (!assignedTo) continue;
         const months = Number(cl.autoReviewPeriodMonths) || 3;

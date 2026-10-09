@@ -6855,6 +6855,7 @@ function CompliancesView({ user }) {
   const { call } = useApi();
   const [compliances, setCompliances] = useState([]);
   const [clients, setClients] = useState([]);
+  const [allOrgClients, setAllOrgClients] = useState([]);
   const [usersList, setUsersList] = useState([]);
   const [stats, setStats] = useState({ totalClients: 0, totalCompliances: 0, reviewDueCount: 0, reviewedCount: 0 });
   const [todayStr, setTodayStr] = useState(new Date().toISOString().slice(0, 10));
@@ -6901,6 +6902,7 @@ function CompliancesView({ user }) {
       const res = await call('compliances');
       setCompliances(res.compliances || []);
       setClients(res.clients || []);
+      setAllOrgClients(res.allOrgClients || []);
       setUsersList(res.users || []);
       if (res.stats) setStats(res.stats);
       if (res.today) setTodayStr(res.today);
@@ -6957,7 +6959,30 @@ function CompliancesView({ user }) {
     const updated = hasIt
       ? currentList.filter(id => id !== complianceId)
       : [...currentList, complianceId];
-    updateClientSetting(client.id, { applicableCompliances: updated }, false);
+    updateClientSetting(client.id, {
+      applicableCompliances: updated,
+      complianceEnabled: updated.length > 0 ? true : (client.complianceEnabled ?? true),
+    }, false);
+  }
+
+  // Remove client from compliance matrix (disable compliance tracking)
+  async function removeClientFromCompliance(client) {
+    if (!confirm(`Remove "${client.name}" from Compliances tab?\n\nThis will disable compliance tracking and clear applicable compliances for this client. The client will still exist in PMS and can be re-enabled anytime.`)) return;
+
+    try {
+      await call('compliances/client-matrix', {
+        method: 'PUT',
+        body: {
+          clientId: client.id,
+          complianceEnabled: false,
+          applicableCompliances: [],
+        },
+      });
+      toast.success(`"${client.name}" removed from Compliances tab.`);
+      setClients(prev => prev.filter(c => c.id !== client.id));
+    } catch (e) {
+      toast.error('Failed to remove client: ' + e.message);
+    }
   }
 
   // Quick mark client as reviewed today
@@ -7627,15 +7652,19 @@ function CompliancesView({ user }) {
                   <TableCell colSpan={compliances.length + 6} className="h-48 text-center text-slate-500">
                     <div className="max-w-md mx-auto space-y-2">
                       <ClipboardCheck className="w-10 h-10 mx-auto text-slate-300" />
-                      <div className="font-semibold text-slate-700">No matching clients found</div>
+                      <div className="font-semibold text-slate-700">
+                        {clients.length === 0
+                          ? 'No clients enabled for compliance tracking yet'
+                          : 'No matching clients found'}
+                      </div>
                       <p className="text-xs text-slate-400">
                         {clients.length === 0
-                          ? 'Add your first client to start tracking applicability and periodic reviews.'
+                          ? 'Only clients you manually enable with compliances ticked appear in this tab. Click "+ Add / Enable Client" to choose existing PMS clients or create a new one.'
                           : 'Try adjusting your search query or filters above.'}
                       </p>
                       {clients.length === 0 && (
-                        <Button size="sm" onClick={() => setAddClientModalOpen(true)} className="mt-2">
-                          <Plus className="w-4 h-4 mr-1" /> Add Client
+                        <Button size="sm" onClick={() => setAddClientModalOpen(true)} className="mt-2 bg-indigo-600 hover:bg-indigo-700 text-white">
+                          <Plus className="w-4 h-4 mr-1" /> Add / Enable Client
                         </Button>
                       )}
                     </div>
@@ -7814,6 +7843,18 @@ function CompliancesView({ user }) {
                             <Check className="w-3.5 h-3.5 mr-1 text-emerald-600" />
                             Reviewed
                           </Button>
+                          {canManageCompliances && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => removeClientFromCompliance(client)}
+                              className="h-8 text-xs text-red-600 hover:text-red-700 hover:bg-red-50 px-2"
+                              title="Remove client from Compliances tab (disables compliance tracking for this client)"
+                            >
+                              <Trash2 className="w-3.5 h-3.5 mr-1 text-red-500" />
+                              Remove
+                            </Button>
+                          )}
                         </div>
                       </TableCell>
                     </TableRow>
@@ -7875,6 +7916,7 @@ function CompliancesView({ user }) {
         <AddClientToMatrixDialog
           compliances={compliances}
           users={usersList}
+          allOrgClients={allOrgClients}
           todayStr={todayStr}
           onClose={() => setAddClientModalOpen(false)}
           onSaved={() => { setAddClientModalOpen(false); loadData(); }}
@@ -8367,10 +8409,10 @@ function ManageCompliancesDialog({ compliances, onClose, onRefresh, onEdit, onAd
 }
 
 // Modal: Add Client to Compliance Matrix (create new or add existing)
-function AddClientToMatrixDialog({ compliances, users, todayStr, onClose, onSaved }) {
+function AddClientToMatrixDialog({ compliances, users, allOrgClients = [], todayStr, onClose, onSaved }) {
   const { call } = useApi();
   const [mode, setMode] = useState('new'); // 'new' | 'existing'
-  const [existingClients, setExistingClients] = useState([]);
+  const [existingClients, setExistingClients] = useState(allOrgClients || []);
   const [selectedExistingId, setSelectedExistingId] = useState('');
   const [loadingExisting, setLoadingExisting] = useState(false);
 
@@ -8387,8 +8429,12 @@ function AddClientToMatrixDialog({ compliances, users, todayStr, onClose, onSave
   const [applicableCompliances, setApplicableCompliances] = useState([]);
   const [saving, setSaving] = useState(false);
 
-  // Fetch all existing clients for selection
+  // Fetch all existing clients for selection if not supplied
   useEffect(() => {
+    if (allOrgClients && allOrgClients.length > 0) {
+      setExistingClients(allOrgClients);
+      return;
+    }
     async function fetchClients() {
       setLoadingExisting(true);
       try {
@@ -8401,7 +8447,7 @@ function AddClientToMatrixDialog({ compliances, users, todayStr, onClose, onSave
       }
     }
     fetchClients();
-  }, []);
+  }, [allOrgClients]);
 
   function toggleComp(id) {
     setApplicableCompliances(prev =>
@@ -8412,6 +8458,9 @@ function AddClientToMatrixDialog({ compliances, users, todayStr, onClose, onSave
   async function handleSaveNew(e) {
     e.preventDefault();
     if (!name.trim()) return toast.error('Client name is required');
+    if (applicableCompliances.length === 0) {
+      return toast.error('Please tick at least one compliance to enable this client in the Compliances tab');
+    }
     setSaving(true);
     try {
       // 1. Create client
@@ -8424,6 +8473,8 @@ function AddClientToMatrixDialog({ compliances, users, todayStr, onClose, onSave
           pan: pan.trim().toUpperCase(),
           phone: phone.trim(),
           email: email.trim(),
+          complianceEnabled: true,
+          applicableCompliances,
         },
       });
 
@@ -8434,6 +8485,7 @@ function AddClientToMatrixDialog({ compliances, users, todayStr, onClose, onSave
           method: 'PUT',
           body: {
             clientId: newClient.id,
+            complianceEnabled: true,
             applicableCompliances,
             complianceAssignedTo: assignedTo,
             lastReviewedOn,
@@ -8443,7 +8495,7 @@ function AddClientToMatrixDialog({ compliances, users, todayStr, onClose, onSave
         });
       }
 
-      toast.success(`Client "${name}" added to compliance matrix!`);
+      toast.success(`Client "${name}" enabled and added to compliance matrix!`);
       onSaved();
     } catch (e) {
       toast.error('Failed to create client: ' + e.message);
@@ -8455,12 +8507,16 @@ function AddClientToMatrixDialog({ compliances, users, todayStr, onClose, onSave
   async function handleAddExisting(e) {
     e.preventDefault();
     if (!selectedExistingId) return toast.error('Please select a client');
+    if (applicableCompliances.length === 0) {
+      return toast.error('Please tick at least one compliance to enable this client in the Compliances tab');
+    }
     setSaving(true);
     try {
       await call('compliances/client-matrix', {
         method: 'PUT',
         body: {
           clientId: selectedExistingId,
+          complianceEnabled: true,
           applicableCompliances,
           complianceAssignedTo: assignedTo,
           lastReviewedOn,
@@ -8468,7 +8524,8 @@ function AddClientToMatrixDialog({ compliances, users, todayStr, onClose, onSave
           autoCreateTask: true,
         },
       });
-      toast.success('Client updated in compliance matrix!');
+      const selectedClient = existingClients.find(c => c.id === selectedExistingId);
+      toast.success(`Client "${selectedClient?.name || 'Selected'}" enabled in Compliances tab!`);
       onSaved();
     } catch (e) {
       toast.error('Failed to update client: ' + e.message);
@@ -8481,14 +8538,25 @@ function AddClientToMatrixDialog({ compliances, users, todayStr, onClose, onSave
     <Dialog open onOpenChange={onClose}>
       <DialogContent className="max-w-xl w-[95vw] max-h-[90vh] overflow-y-auto p-5">
         <DialogHeader>
-          <DialogTitle>Add Client to Compliance Matrix</DialogTitle>
+          <DialogTitle>Add / Enable Client in Compliances</DialogTitle>
           <DialogDescription>
-            Register a client with applicable compliances, responsible staff member, and review schedule.
+            Only clients with compliances ticked appear in this tab. Select an existing PMS client or register a new client to start tracking their compliance deadlines and reviews.
           </DialogDescription>
         </DialogHeader>
 
         {/* Mode selector */}
         <div className="flex border-b border-slate-200 mt-2">
+          <button
+            type="button"
+            className={`py-2 px-4 text-xs font-semibold border-b-2 transition-colors ${
+              mode === 'existing'
+                ? 'border-indigo-600 text-indigo-600'
+                : 'border-transparent text-slate-500 hover:text-slate-800'
+            }`}
+            onClick={() => setMode('existing')}
+          >
+            Enable Existing PMS Client
+          </button>
           <button
             type="button"
             className={`py-2 px-4 text-xs font-semibold border-b-2 transition-colors ${
@@ -8499,17 +8567,6 @@ function AddClientToMatrixDialog({ compliances, users, todayStr, onClose, onSave
             onClick={() => setMode('new')}
           >
             Create New Client
-          </button>
-          <button
-            type="button"
-            className={`py-2 px-4 text-xs font-semibold border-b-2 transition-colors ${
-              mode === 'existing'
-                ? 'border-indigo-600 text-indigo-600'
-                : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-            onClick={() => setMode('existing')}
-          >
-            Configure Existing Client
           </button>
         </div>
 
@@ -8572,7 +8629,7 @@ function AddClientToMatrixDialog({ compliances, users, todayStr, onClose, onSave
             {/* Compliance applicability selection */}
             <div>
               <Label className="text-xs font-semibold text-slate-700 mb-1.5 block">
-                Applicable Compliances (Check all that apply to this client):
+                Applicable Compliances * (Tick compliances that apply to this client):
               </Label>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 border rounded-md p-2.5 bg-slate-50 max-h-36 overflow-y-auto">
                 {compliances.map(comp => (
@@ -8640,13 +8697,13 @@ function AddClientToMatrixDialog({ compliances, users, todayStr, onClose, onSave
                 Cancel
               </Button>
               <Button type="submit" disabled={saving} className="bg-indigo-600 hover:bg-indigo-700">
-                {saving ? 'Creating...' : 'Create & Add to Matrix'}
+                {saving ? 'Creating...' : 'Create & Enable in Matrix'}
               </Button>
             </DialogFooter>
           </form>
         ) : (
           <form onSubmit={handleAddExisting} className="space-y-3.5 mt-3">
-            <Field label="Select Existing Client *">
+            <Field label="Select Existing Client from PMS *">
               <Select value={selectedExistingId} onValueChange={(val) => {
                 setSelectedExistingId(val);
                 const cl = existingClients.find(x => x.id === val);
@@ -8658,23 +8715,31 @@ function AddClientToMatrixDialog({ compliances, users, todayStr, onClose, onSave
                 }
               }}>
                 <SelectTrigger className="text-xs">
-                  <SelectValue placeholder="Search or select client..." />
+                  <SelectValue placeholder="Search or select PMS client..." />
                 </SelectTrigger>
                 <SelectContent className="max-h-60">
-                  {existingClients.map(c => (
-                    <SelectItem key={c.id} value={c.id}>
-                      {c.name} {c.company ? `(${c.company})` : ''} {c.gstin ? `— ${c.gstin}` : ''}
-                    </SelectItem>
-                  ))}
+                  {existingClients.map(c => {
+                    const isAlreadyIn = c.complianceEnabled || (Array.isArray(c.applicableCompliances) && c.applicableCompliances.length > 0);
+                    return (
+                      <SelectItem key={c.id} value={c.id}>
+                        {c.name} {c.company ? `(${c.company})` : ''} {isAlreadyIn ? '✓ [Active in Compliances]' : ''}
+                      </SelectItem>
+                    );
+                  })}
                 </SelectContent>
               </Select>
             </Field>
 
             {/* Compliance applicability selection */}
             <div>
-              <Label className="text-xs font-semibold text-slate-700 mb-1.5 block">
-                Applicable Compliances:
-              </Label>
+              <div className="flex items-center justify-between mb-1.5">
+                <Label className="text-xs font-semibold text-slate-700 block">
+                  Applicable Compliances * (Tick compliances to enable for this client):
+                </Label>
+                <span className="text-[11px] text-indigo-600 font-medium">
+                  {applicableCompliances.length} ticked
+                </span>
+              </div>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 border rounded-md p-2.5 bg-slate-50 max-h-36 overflow-y-auto">
                 {compliances.map(comp => (
                   <label
@@ -8689,6 +8754,9 @@ function AddClientToMatrixDialog({ compliances, users, todayStr, onClose, onSave
                   </label>
                 ))}
               </div>
+              <p className="text-[11px] text-slate-500 mt-1">
+                Clients must have at least one compliance ticked to appear as a row in the Compliances tab.
+              </p>
             </div>
 
             {/* Assignment & Review Settings */}
@@ -8741,7 +8809,7 @@ function AddClientToMatrixDialog({ compliances, users, todayStr, onClose, onSave
                 Cancel
               </Button>
               <Button type="submit" disabled={saving || !selectedExistingId} className="bg-indigo-600 hover:bg-indigo-700">
-                {saving ? 'Updating...' : 'Save Matrix Settings'}
+                {saving ? 'Enabling...' : 'Enable Client & Add to Matrix'}
               </Button>
             </DialogFooter>
           </form>
