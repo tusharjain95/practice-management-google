@@ -15,11 +15,12 @@ async function handleCron(request) {
   const authHeader = request.headers.get('authorization');
   const querySecret = new URL(request.url).searchParams.get('secret');
 
-  if (process.env.CRON_SECRET) {
-    const expectedAuth = `Bearer ${process.env.CRON_SECRET}`;
-    if (authHeader !== expectedAuth && querySecret !== process.env.CRON_SECRET) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+  if (!process.env.CRON_SECRET) {
+    return NextResponse.json({ error: 'CRON_SECRET is not configured' }, { status: 500 });
+  }
+  const expectedAuth = `Bearer ${process.env.CRON_SECRET}`;
+  if (authHeader !== expectedAuth && querySecret !== process.env.CRON_SECRET) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   try {

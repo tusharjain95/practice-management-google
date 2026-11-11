@@ -4,6 +4,9 @@ import jwt from 'jsonwebtoken';
 import { sendDailyRosterPdfWhatsApp } from '@/lib/whatsapp/client';
 import { sendDailyRosterTelegram, processDepartmentReminders } from '@/lib/telegram/client';
 
+if (!process.env.JWT_SECRET && process.env.VERCEL_ENV === 'production') {
+  throw new Error('JWT_SECRET environment variable is required in production.');
+}
 const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret';
 const APP_BASE_URL = process.env.APP_BASE_URL || 'http://localhost:3000';
 
@@ -20,11 +23,12 @@ async function handleCron(request) {
   const authHeader = request.headers.get('authorization');
   const querySecret = new URL(request.url).searchParams.get('secret');
   
-  if (process.env.CRON_SECRET) {
-    const expectedAuth = `Bearer ${process.env.CRON_SECRET}`;
-    if (authHeader !== expectedAuth && querySecret !== process.env.CRON_SECRET) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+  if (!process.env.CRON_SECRET) {
+    return NextResponse.json({ error: 'CRON_SECRET is not configured' }, { status: 500 });
+  }
+  const expectedAuth = `Bearer ${process.env.CRON_SECRET}`;
+  if (authHeader !== expectedAuth && querySecret !== process.env.CRON_SECRET) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   try {

@@ -40,6 +40,9 @@ export const preferredRegion = 'sin1';
 
 const MONGO_URL = process.env.MONGO_URL;
 const DB_NAME = process.env.DB_NAME || 'ca_practice';
+if (!process.env.JWT_SECRET && process.env.VERCEL_ENV === 'production') {
+  throw new Error('JWT_SECRET environment variable is required in production.');
+}
 const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret';
 
 let cached = global._mongo;
@@ -557,6 +560,10 @@ async function getDb() {
       return cached.db;
     } catch (err) {
       console.error('[AI Studio] Failed to connect to Supabase/PostgreSQL database:', err);
+      if (process.env.VERCEL_ENV === 'production') {
+        // Never fall back to the ephemeral mock DB in production: fail loudly instead.
+        throw new Error('Production database connection failed: ' + (err && err.message ? err.message : err));
+      }
     }
   }
 
@@ -587,6 +594,8 @@ async function getDb() {
 }
 
 async function seedAdmin(db) {
+  // Demo users are opt-in for local/preview environments only; never seed in production.
+  if (process.env.SEED_DEMO_USERS !== 'true' || process.env.VERCEL_ENV === 'production') return;
   const users = db.collection('users');
   const existing = await users.findOne({ email: 'admin@ca.com' });
   if (!existing) {

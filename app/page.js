@@ -344,8 +344,8 @@ function App() {
 
 function Login({ onLogin }) {
   const { call } = useApi();
-  const [email, setEmail] = useState('admin@ca.com');
-  const [password, setPassword] = useState('admin123');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
 
   async function submit(e) {
@@ -419,13 +419,6 @@ function Login({ onLogin }) {
                 {loading ? 'Signing in...' : 'Sign In'}
               </Button>
             </form>
-            <Separator className="my-6 border-slate-100" />
-            <div className="text-xs text-slate-500 space-y-1 bg-slate-50 p-3.5 rounded-lg border border-slate-100 shadow-sm">
-              <div className="font-semibold text-slate-700 mb-2 uppercase tracking-wider text-[10px]">Demo credentials:</div>
-              <div className="flex justify-between items-center"><span className="font-mono text-slate-600">admin@ca.com / admin123</span> <span className="text-[10px] bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded font-medium">Admin</span></div>
-              <div className="flex justify-between items-center"><span className="font-mono text-slate-600">manager@ca.com / manager123</span> <span className="text-[10px] bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded font-medium">Manager</span></div>
-              <div className="flex justify-between items-center"><span className="font-mono text-slate-600">staff@ca.com / staff123</span> <span className="text-[10px] bg-teal-50 text-teal-700 px-1.5 py-0.5 rounded font-medium">Staff</span></div>
-            </div>
           </CardContent>
         </Card>
       </div>

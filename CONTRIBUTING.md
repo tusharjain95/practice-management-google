@@ -88,9 +88,9 @@ tail -f .next/build.log
 
 # Wipe local database and re-seed (CAUTION)
 docker exec -it ca-mongo mongosh ca_practice --eval 'db.dropDatabase()'
-# then refresh the app to re-seed admin/manager/staff users
+# set SEED_DEMO_USERS=true in .env first, then refresh the app to re-seed demo users
 
-# Quick API test
+# Quick API test (local demo seed only)
 curl -X POST http://localhost:3000/api/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"email":"admin@ca.com","password":"admin123"}'
