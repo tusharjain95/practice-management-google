@@ -560,9 +560,9 @@ async function getDb() {
       return cached.db;
     } catch (err) {
       console.error('[AI Studio] Failed to connect to Supabase/PostgreSQL database:', err);
-      if (process.env.VERCEL_ENV === 'production') {
-        // Never fall back to the ephemeral mock DB in production: fail loudly instead.
-        throw new Error('Production database connection failed: ' + (err && err.message ? err.message : err));
+      if (process.env.VERCEL_ENV) {
+        // Never fall back to the ephemeral mock DB on Vercel: fail loudly instead.
+        throw new Error('Database connection failed: ' + (err && err.message ? err.message : err));
       }
     }
   }

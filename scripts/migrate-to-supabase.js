@@ -27,7 +27,9 @@ async function migrate() {
   console.log(`🔌 Connecting to Supabase/PostgreSQL...`);
   const pgPool = new Pool({
     connectionString: DATABASE_URL,
-    ssl: DATABASE_URL.includes('supabase') || DATABASE_URL.includes('neon.tech') || DATABASE_URL.includes('.com') ? { rejectUnauthorized: false } : false
+    ssl: DATABASE_URL.includes('supabase')
+      ? { rejectUnauthorized: true, ca: require('fs').readFileSync(require('path').join(__dirname, '..', 'lib', 'db', 'prod-ca-2021.crt'), 'utf8') }
+      : (DATABASE_URL.includes('neon.tech') || DATABASE_URL.includes('.com') ? { rejectUnauthorized: true } : false)
   });
   await pgPool.query('SELECT NOW()'); // Verify connection
   console.log('✅ Connected to Supabase/PostgreSQL successfully.');
