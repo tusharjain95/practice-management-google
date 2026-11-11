@@ -266,16 +266,10 @@ yarn dev
 ```
 Open [http://localhost:3000](http://localhost:3000)
 
-### 5. First login
-Admin/manager/staff users are **auto-seeded** on first DB hit. Use:
+### 5. First login (local development only)
+Demo users are **never seeded in production**. For local development you can opt in to seeding demo accounts by setting `SEED_DEMO_USERS=true` in your `.env`, then restarting the dev server. The demo accounts are `admin@ca.com`, `manager@ca.com` and `staff@ca.com`, each with the password `<role>123` (e.g. `admin123` for the admin).
 
-| Role | Email | Password |
-|---|---|---|
-| Admin | `admin@ca.com` | `admin123` |
-| Manager | `manager@ca.com` | `manager123` |
-| Staff | `staff@ca.com` | `staff123` |
-
-> ⚠️ **Change these passwords immediately in production** via Sidebar → Change Password.
+In a real deployment, create your admin account from an existing admin (Sidebar → Staff) and use a strong, unique password.
 
 ---
 
@@ -286,7 +280,7 @@ Best when you don't want to manage servers.
 
 1. Push the repo to GitHub
 2. Sign in to [vercel.com](https://vercel.com) → "New Project" → import your repo
-3. **Environment Variables** — add the same keys as your `.env`:
+3. **Environment Variables** — add the same keys as your `.env` (`JWT_SECRET` and `CRON_SECRET` are required in production; the app refuses to boot or serve cron routes without them). Never set `SEED_DEMO_USERS` in production.
    - `MONGO_URL` — use [MongoDB Atlas](https://www.mongodb.com/atlas/database) free tier connection string
    - `DB_NAME` — e.g., `ca_practice`
    - `JWT_SECRET` — generate a strong random string
@@ -534,8 +528,8 @@ Each user wanting WhatsApp notifications must:
 ## 📖 How to Use — Daily Workflow Guide
 
 ### 🚪 First-time setup (Admin)
-1. **Login** as `admin@ca.com` / `admin123`
-2. **Change Password** (sidebar) — immediately
+1. **Login** with your firm's admin account
+2. **Change Password** (sidebar) if you are using a password anyone else set
 3. **Branding** (sidebar) — upload logo, set firm name, GSTIN, address, bank/UPI details
 4. **Staff** (sidebar) — create user accounts for each team member, assign roles
 
